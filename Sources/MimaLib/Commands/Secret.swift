@@ -83,7 +83,7 @@ struct Secret: ParsableCommand {
                 if export {
                     // Infer Env Var: test-key -> TEST_KEY
                     let envVar = name.uppercased().replacingOccurrences(of: "-", with: "_")
-                    print("export \(envVar)='\(value)'")
+                    print("export \(envVar)=\(shellSingleQuote(value))")
                 } else {
                     print(value)
                 }

@@ -29,7 +29,7 @@ struct Env: ParsableCommand {
             do {
                 let secretData = try KeychainManager.shared.get(key: secretName, context: context)
                 if let secretValue = String(data: secretData, encoding: .utf8) {
-                    print("export \(envVar)='\(secretValue)'")
+                    print("export \(envVar)=\(shellSingleQuote(secretValue))")
                 }
             } catch {
                 fputs("Failed to retrieve '\(secretName)': \(error)\n", stderr)
