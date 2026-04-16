@@ -1,50 +1,47 @@
 import ArgumentParser
 import Foundation
 import LocalAuthentication
+import Darwin
 
 struct Run: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Run a command with secrets injected",
         discussion: "Batch unlocks secrets using Touch ID and injects them into the environment."
     )
-    
+
     @Argument(help: "The group to load secrets for")
     var group: String
-    
+
     @Argument(parsing: .captureForPassthrough, help: "The command to run (use -- to separate)")
     var command: [String]
-    
+
     func run() throws {
         guard !command.isEmpty else {
-            print("Error: No command provided.")
+            fputs("Error: No command provided.\n", stderr)
             throw ExitCode.validationFailure
         }
-        
+
         // 1. Load Config
         let mappings = try ConfigManager.shared.getSecrets(for: group)
         if mappings.isEmpty {
             print("⚠️ No secrets found for group '\(group)'. Running command explicitly without added secrets.")
         }
-        
-        // 2. Batch Unlock
+
+        // 2. Batch Unlock — one LAContext, one Touch ID prompt for N secrets.
         var secretsEnv: [String: String] = [:]
-        
+
         if !mappings.isEmpty {
-            // One Tap: Reuse context
             let context = LAContext()
             context.localizedReason = "Access secrets for '\(group)'"
-            
-            // Pre-flight check (optional, but good for UX to fail fast if no biometrics)
-             var authError: NSError?
-             if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &authError) {
-                 // Good to go
-             } else {
-                 print("⛔️ Identity fracture detected: Biometrics not available.")
-                 throw ExitCode.failure
-             }
+
+            var authError: NSError?
+            guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &authError) else {
+                fputs("⛔️ Identity fracture detected: Biometrics not available.\n", stderr)
+                throw ExitCode.failure
+            }
 
             print("🔓 Authenticating for '\(group)'...")
-            
+
             for (envVar, secretName) in mappings {
                 do {
                     let secretData = try KeychainManager.shared.get(key: secretName, context: context)
@@ -52,54 +49,52 @@ struct Run: ParsableCommand {
                         secretsEnv[envVar] = secretValue
                     }
                 } catch {
-                     print("⛔️ Identity fracture detected: Failed to retrieve '\(secretName)': \(error)")
-                     throw ExitCode.failure
+                    fputs("⛔️ Identity fracture detected: Failed to retrieve '\(secretName)': \(error)\n", stderr)
+                    throw ExitCode.failure
                 }
             }
         }
-        
-        // 3. Prepare Environment
-        var env = ProcessInfo.processInfo.environment
-        env.merge(secretsEnv) { (_, new) in new }
-        
-        // 4. Exec
+
+        // 3. Build the child env as a copy of ours plus the secrets. We
+        //    deliberately do NOT touch the parent process env — no setenv,
+        //    no getenv-visible window where a crash dump or child thread
+        //    could observe a secret that isn't ours to expose.
+        var childEnv = ProcessInfo.processInfo.environment
+        childEnv.merge(secretsEnv) { (_, new) in new }
+
+        // 4. execve doesn't do PATH lookup; reproduce execvp's lookup
+        //    using the child's PATH so behaviour matches the shell.
         let executable = command[0]
-        let args = command
-        
-        // Convert to C-compatible strings
-        let argv: [UnsafeMutablePointer<CChar>?] = args.map { $0.withCString(strdup) } + [nil]
-        
-        // Convert env to C-compatible array
-        // Format: key=value
-        let envp: [UnsafeMutablePointer<CChar>?] = env.map { "\($0.key)=\($0.value)".withCString(strdup) } + [nil]
-        
-        // Use executvp (search path) or execv (direct path)
-        // Usually we want shell path resolution, so execvp is better, but Swift doesn't expose it directly easily without bridging header sometimes?
-        // Actually execvp is in Foundation (Darwin)
-        
-        // We need to find the full path if it's not absolute? execvp does that.
-        // But `execvp` replaces process.
-        
-        argv.withUnsafeBufferPointer { argvBuffer in
-            envp.withUnsafeBufferPointer { envpBuffer in
-                // execvP (file, argv) uses PATH. But we also want to set ENVP.
-                // execve (file, argv, envp) does NOT use PATH.
-                // If we want PATH resolution + custom ENV, we might need to resolve path manually or use posix_spawnp?
-                // Or just update `environ` global variable and use execvp.
-                
-                // Simpler approach: update setenv for current process, then execvp
-                for (k, v) in secretsEnv {
-                    setenv(k, v, 1) // 1 = overwrite
-                }
-                
-                // Now simple execvp
-                execvp(executable, argvBuffer.baseAddress)
+        let resolvedPath: String
+        if executable.contains("/") {
+            resolvedPath = executable
+        } else {
+            guard let found = resolveExecutable(executable, pathEnv: childEnv["PATH"] ?? "") else {
+                fputs("Error: command not found: \(executable)\n", stderr)
+                throw ExitCode.failure
+            }
+            resolvedPath = found
+        }
+
+        // 5. Hand off to execve. On success this call replaces the
+        //    current process image, so argv/envp strdups never get
+        //    freed — that's fine, the whole address space is gone.
+        let argv: [UnsafeMutablePointer<CChar>?] = command.map { strdup($0) } + [nil]
+        let envp: [UnsafeMutablePointer<CChar>?] =
+            childEnv.map { strdup("\($0.key)=\($0.value)") } + [nil]
+
+        argv.withUnsafeBufferPointer { argvBuf in
+            envp.withUnsafeBufferPointer { envpBuf in
+                _ = execve(resolvedPath, argvBuf.baseAddress, envpBuf.baseAddress)
             }
         }
-        
-        // If we return, it failed
-        let error = String(cString: strerror(errno))
-        print("Error executing command: \(error)")
+
+        // If we're still here, execve failed. Free what we leaked so
+        // the failure path is clean, then report and exit.
+        for ptr in argv { free(ptr) }
+        for ptr in envp { free(ptr) }
+        let err = String(cString: strerror(errno))
+        fputs("Error executing '\(resolvedPath)': \(err)\n", stderr)
         throw ExitCode.failure
     }
 }
