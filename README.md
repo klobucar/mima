@@ -47,18 +47,27 @@ Delete the group when you're done with a project; the underlying secret stays in
 ```bash
 git clone https://github.com/klobucar/mima.git
 cd mima
-make install
-```
-
-The Makefile codesigns the binary against `entitlements.plist` — that's what lets it talk to the Keychain at all.
-
-By default, ad-hoc signing is used and mima falls back to a non-ACL Keychain item. Still encrypted at rest, but no Touch ID gate.
-
-To enable biometric unlock, sign with your own Apple Developer identity (find it in Keychain Access, e.g. `Apple Development: Name (TEAMID)`):
-
-```bash
 make install SIGNING_IDENTITY="Apple Development: Name (TEAMID)"
 ```
+
+mima needs codesigning against `entitlements.plist` to talk to the Keychain. `SIGNING_IDENTITY` must be an "Apple Development" certificate from a **paid** Apple Developer account — find it in Keychain Access. The free developer tier is not enough.
+
+<details>
+<summary>Why the paid account is required for Touch ID</summary>
+
+Apple gates the biometric / `.userPresence` Keychain ACL behind the $99/year Developer Program. Three things have to line up for a `mima secret get` to fire a Touch ID prompt:
+
+1. **A stable Team ID on the binary.** The Keychain records the calling binary's Team ID + bundle identifier as part of the ACL identity. Ad-hoc-signed binaries have no Team ID — the OS treats every rebuild as a different identity, so a `.userPresence`-gated item written by one build can't be read by the next, and biometric `LAContext` evaluation refuses to bind to ad-hoc code paths at all.
+2. **The keychain-access-groups entitlement** in `entitlements.plist`, which scopes mima to its own Keychain partition. Entitlements are only honored when they're embedded in a binary signed by a real (non-ad-hoc) identity.
+3. **A signing identity issued to a Developer Program member.** Apple issues "Apple Development" / "Apple Distribution" certificates only to enrolled members. The free tier you get from signing in with an Apple ID is a **"Personal Team"** identity — sufficient to sideload an app to a device you own, but explicitly not allowed to enable Keychain Sharing, App Groups, or anything that touches the LocalAuthentication framework. Xcode will surface a `requires a development team with the Apple Developer Program` error if you try.
+
+The reason Apple draws the line there: every binary that can pop a system biometric prompt is a phishing vector. Tying that capability to a verified, revocable developer identity means a compromised cert can be killed centrally — Apple revokes the cert, the binary stops working everywhere overnight. Personal Teams have no equivalent revocation path.
+
+References: [Code Signing in Depth](https://developer.apple.com/library/archive/technotes/tn2206/_index.html) · [`SecAccessControlCreateWithFlags`](https://developer.apple.com/documentation/security/1394452-secaccesscontrolcreatewithflags) · [Keychain Services Access Control](https://developer.apple.com/documentation/security/restricting_keychain_item_accessibility)
+
+</details>
+
+> **Without a paid signing identity:** plain `make install` falls back to ad-hoc signing and a Keychain item without the `.userPresence` ACL. Values stay encrypted at rest, but **the Touch ID gate that anchors the threat model goes away** — any process running as you can read them by calling `SecItemCopyMatching` against an unlocked login Keychain. mima still beats a plaintext `.envrc` (an attacker needs to know mima's service name and call the Keychain API), but the headline biometric-gated property in the [Threat model](#threat-model) is not in effect on this install.
 
 ## Quick start
 
@@ -155,6 +164,17 @@ mima run staging -- ./deploy.sh
 mima run prod    -- ./deploy.sh
 ```
 
+## Compared to
+
+mima isn't strictly better than any of these — pick the one whose tradeoffs match your workflow.
+
+- **1Password CLI (`op run`).** The closest competitor. `op run --env-file=.env -- cmd` injects values per invocation and is biometric-gated once `op` is authenticated. Choose `op` if you need shared team vaults, audit logs, RBAC, or non-macOS support. Choose mima if you want local-only storage, no subscription, no network round-trip per invocation, and a free baseline. Roughly: 1Password is to your team what the Keychain is to your machine.
+- **direnv.** direnv exports values into your interactive shell's `environ` on `cd`. Every subsequent process inherits them — including `npm install` postinstalls, the precise transitive surface that supply-chain stealers exploit. `mima run` is process-scoped: secrets only land in the env of the command you named. Once the shell hook lands, wrapper mode gives you direnv-shaped ergonomics with the process scoping intact.
+- **direnv + `op run`.** A common compromise: `.envrc` calls `op run` to fetch values, scoped to the current shell. Better than plaintext direnv, but you're back to shell-wide `environ` exposure for any tool that auto-runs on `cd`. mima's wrapper mode is the same idea minus the shell-wide step.
+- **aws-vault.** Same shape — Keychain-backed, biometric-gated, exec-only — but AWS-specific. mima generalises the pattern to any env var.
+- **sops / age.** File-encrypted at rest, decrypted on demand. Strong for team config in a repo and for CI; awkward for personal interactive use because every command needs the decryption step. mima trades portability for ergonomics on a single machine.
+- **Plain `.env` / `.envrc`.** Plaintext on disk, readable by any process running as you. Exactly the credential-stealer payload. Don't.
+
 ## Security model
 
 - Secrets are stored via `SecItemAdd` with `kSecAttrAccessControl = .userPresence`, so retrieval requires biometric or passcode authentication.
@@ -170,7 +190,7 @@ mima's design is shaped by the class of attacks that dominates 2023–present: *
 
 ### What mima defends against
 
-- **Plaintext credential files.** `.env` / `.envrc` / `~/.aws/credentials` / `~/.npmrc` are readable by any process running as you, and the common scraper pattern is to read them directly. mima stores values in the Keychain behind a `.userPresence` ACL — retrieval requires a Touch ID prompt. An attacker trying to steal values triggers a biometric prompt out of nowhere, which is extremely conspicuous.
+- **Plaintext credential files.** `.env` / `.envrc` / `~/.aws/credentials` / `~/.npmrc` are readable by any process running as you, and the common scraper pattern is to read them directly. mima stores values in the Keychain — encrypted at rest, opaque to a quick `cat`. With a paid Apple Developer signing identity ([see Install](#install)), retrieval is also gated by `.userPresence`: an attacker reading values triggers a Touch ID prompt out of nowhere, which is extremely conspicuous.
 - **Globally-exported shell env.** If `.zshenv` runs `export STRIPE_KEY=…`, every process you launch — including every transitive postinstall script — inherits it forever. `mima run` scopes values to the specific child process you named; they never enter the parent shell's `environ`.
 - **Secrets in shell history.** `mima secret add` uses `getpass`, never command-line arguments. Values never land in `.zsh_history`.
 - **Over-broad agent access.** Coding agents inherit your full shell env by default. `mima run agent-claude -- claude-code` hands the agent only the variables you explicitly grouped for it.
@@ -196,6 +216,8 @@ Supply-chain attacks shape how the shell hook works. A direnv-style auto-export 
 mima raises the cost of credential theft; it doesn't prevent it. Not in scope: `curl | sh` review, phishing, MDM compromise, device theft with a weak passcode, or a persistent determined adversary with ongoing local code execution.
 
 ## Roadmap
+
+Short version below; [`ROADMAP.md`](ROADMAP.md) has rationale, open questions, and a "considered, not planned" section.
 
 1. **Shell hook + directory discovery.** `mima hook zsh` emits a precmd that discovers the nearest `.mima.yaml` by walking upward from `pwd`. Three loading modes:
    - **Wrapper mode** (default) — define per-group shell functions that expand to `mima run <group> -- "$@"`. Secrets stay process-scoped.
