@@ -166,7 +166,7 @@ mima run prod    -- ./deploy.sh
 
 ## Threat model
 
-mima's design is shaped by the class of attacks that dominates 2023–2025: **supply-chain credential stealers**. Shai-Hulud (npm, 2024), recurring PyPI token-stealer waves, compromised IDE extensions, malicious CLI tools from `curl | sh` installers, and prompt-injected agent commands. They all share a pattern: attacker code executes *as you*, during a routine action (package install, extension load, tool invocation). macOS's permission layer doesn't stop a process running as your user from reading anything else you can read. What saves you is what isn't accessible — values that aren't at rest, and values gated behind a prompt you'd notice.
+mima's design is shaped by the class of attacks that dominates 2023–present: **supply-chain credential stealers**. Shai-Hulud (npm, 2025–ongoing), recurring PyPI token-stealer waves, compromised IDE extensions, malicious CLI tools from `curl | sh` installers, and prompt-injected agent commands. They all share a pattern: attacker code executes *as you* during a routine action (package install, extension load, tool invocation), and the payload almost always lifts every credential it can read — env vars, dotfiles, `~/.aws/credentials`, `~/.npmrc`, the lot — and posts them to a webhook before you've noticed. macOS's permission layer doesn't stop a process running as your user from reading anything else you can read. What saves you is what isn't accessible — values that aren't at rest, and values gated behind a prompt you'd notice.
 
 ### What mima defends against
 
