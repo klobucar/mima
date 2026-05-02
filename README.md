@@ -4,7 +4,7 @@
   <img src="assets/mima.png" alt="mima" width="520" />
 </p>
 
-**A Keychain-backed environment manager for macOS.** Group API keys, database URLs, and other secrets; inject one group into a child process with a single Touch ID prompt. Useful today for scoping what an AI coding agent can see, or running commands with project-specific credentials. On the roadmap: a shell hook and per-project discovery, at which point mima becomes a full `direnv` replacement with Keychain-backed values.
+**A Keychain-backed environment manager for macOS.** Group API keys, database URLs, and other secrets; inject one group into a child process with a single Touch ID prompt. Useful today for scoping what an AI coding agent can see, or running commands with project-specific credentials. On the roadmap: a shell hook with per-project `.mima.yaml` discovery, at which point mima becomes a full `direnv` replacement with Keychain-backed values.
 
 ---
 
