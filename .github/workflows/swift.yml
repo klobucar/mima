@@ -1,0 +1,34 @@
+name: Swift
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Show Swift version
+        run: swift --version
+      - name: Build (debug)
+        run: swift build -v
+      - name: Test
+        # Tests use MockKeychain, so codesigning / Touch ID isn't needed
+        # — `swift test` runs cleanly on the runner.
+        run: swift test -v
+      - name: Build (release)
+        run: swift build -c release -v
