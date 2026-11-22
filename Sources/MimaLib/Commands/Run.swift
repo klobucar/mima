@@ -87,9 +87,13 @@ struct Run: ParsableCommand {
             let context = LAContext()
             context.localizedReason = "Access secrets for '\(group)'"
 
+            // Match the items' `.userPresence` ACL, which accepts Touch ID
+            // or the login password. A biometrics-only check refused to run
+            // on Macs without Touch ID, or with the lid closed, even though
+            // the Keychain would have asked for the password.
             var authError: NSError?
-            guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &authError) else {
-                fputs("⛔️ Identity fracture detected: Biometrics not available.\n", stderr)
+            guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &authError) else {
+                fputs("⛔️ Cannot authenticate: neither Touch ID nor a login password is available.\n", stderr)
                 throw ExitCode.failure
             }
 

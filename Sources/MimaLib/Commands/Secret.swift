@@ -35,11 +35,24 @@ struct Secret: ParsableCommand {
                 return
             }
             
+            let protection: KeychainProtection
             do {
-                try KeychainManager.shared.add(key: name, value: data)
-                print("✅ Secret '\(name)' added to Keychain with Strict Biometric ACL.")
+                protection = try KeychainManager.shared.add(key: name, value: data)
             } catch {
-                print("Error adding secret: \(error)")
+                fputs("Error adding secret '\(name)': \(error)\n", stderr)
+                throw ExitCode.failure
+            }
+            switch protection {
+            case .userPresence:
+                print("✅ Secret '\(name)' added. Reading it requires Touch ID or your login password.")
+            case .none:
+                print("✅ Secret '\(name)' added.")
+                fputs(
+                    "⚠️  Stored WITHOUT Touch ID protection: this mima binary isn't signed with a team identity and "
+                        + "provisioning profile, so any process running as you can read the value without a prompt. "
+                        + "See README → Install, and run 'mima doctor'.\n",
+                    stderr
+                )
             }
         }
     }

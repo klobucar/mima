@@ -17,6 +17,7 @@ Alpha. What works today:
 - `mima run <group> -- cmd` — one Touch ID unlocks the whole group; secrets are injected into the child via `execve`, never into the parent `environ`
 - `mima run --scrub <group> -- cmd` — same, but the child gets *only* the group plus a minimal safelist (`PATH`, `HOME`, `TERM`, …), not your whole environment
 - `mima env <group>` — print shell `export` lines for `eval "$(...)"` in an interactive shell
+- `mima doctor` — verify the binary is signed for Touch ID, that protected storage works, and list unprotected secrets and broken group mappings
 
 Not yet (see [Roadmap](#roadmap)):
 
@@ -49,10 +50,16 @@ Delete the group when you're done with a project; the underlying secret stays in
 ```bash
 git clone https://github.com/klobucar/mima.git
 cd mima
-make install SIGNING_IDENTITY="Apple Development: Name (TEAMID)"
+make install SIGNING_IDENTITY="Apple Development: Your Name (XXXXXXXXXX)"
+mima doctor        # confirms Touch ID protection is actually in effect
 ```
 
-mima needs codesigning against `entitlements.plist` to talk to the Keychain. `SIGNING_IDENTITY` must be an "Apple Development" certificate from a **paid** Apple Developer account — find it in Keychain Access. The free developer tier is not enough.
+For Touch ID protection you need two things from a **paid** Apple Developer account. The free tier is not enough.
+
+- **An "Apple Development" signing identity.** List yours with `security find-identity -v -p codesigning`. The value in parentheses is a per-person ID, not your team ID. The build reads the team ID from the certificate itself.
+- **A macOS development provisioning profile for your team.** The easiest way to get one: in Xcode, build any macOS app target once with your team selected and automatic signing on. Xcode then writes a `Mac Team Provisioning Profile: *` into `~/Library/Developer/Xcode/UserData/Provisioning Profiles/`, and `make` finds it automatically. You can also pass `PROFILE=/path/to/profile.provisionprofile` explicitly.
+
+`make install` with an identity builds `Mima.app` into `/usr/local/libexec/mima/` and symlinks `/usr/local/bin/mima` to it. The app bundle is required: only a bundle can carry the provisioning profile. `scripts/sign.sh` explains the details. Set `PREFIX=` to install elsewhere.
 
 <details>
 <summary>Why the paid account is required for Touch ID</summary>
@@ -60,7 +67,7 @@ mima needs codesigning against `entitlements.plist` to talk to the Keychain. `SI
 Apple gates the biometric / `.userPresence` Keychain ACL behind the $99/year Developer Program. Three things have to line up for a `mima secret get` to fire a Touch ID prompt:
 
 1. **A stable Team ID on the binary.** The Keychain records the calling binary's Team ID + bundle identifier as part of the ACL identity. Ad-hoc-signed binaries have no Team ID — the OS treats every rebuild as a different identity, so a `.userPresence`-gated item written by one build can't be read by the next, and biometric `LAContext` evaluation refuses to bind to ad-hoc code paths at all.
-2. **The keychain-access-groups entitlement** in `entitlements.plist`, which scopes mima to its own Keychain partition. Entitlements are only honored when they're embedded in a binary signed by a real (non-ad-hoc) identity.
+2. **The keychain-access-groups entitlement, authorized by a provisioning profile.** `.userPresence` items live in the data protection Keychain, which requires this entitlement. On macOS it is *restricted*: AMFI kills, at launch, any binary that claims it without an embedded provisioning profile authorizing it. That includes ad-hoc and Developer ID-signed binaries. A bare command-line binary can't embed a profile, so mima ships as a minimal app bundle.
 3. **A signing identity issued to a Developer Program member.** Apple issues "Apple Development" / "Apple Distribution" certificates only to enrolled members. The free tier you get from signing in with an Apple ID is a **"Personal Team"** identity — sufficient to sideload an app to a device you own, but explicitly not allowed to enable Keychain Sharing, App Groups, or anything that touches the LocalAuthentication framework. Xcode will surface a `requires a development team with the Apple Developer Program` error if you try.
 
 The reason Apple draws the line there: every binary that can pop a system biometric prompt is a phishing vector. Tying that capability to a verified, revocable developer identity means a compromised cert can be killed centrally — Apple revokes the cert, the binary stops working everywhere overnight. Personal Teams have no equivalent revocation path.
@@ -69,7 +76,9 @@ References: [Code Signing in Depth](https://developer.apple.com/library/archive/
 
 </details>
 
-> **Without a paid signing identity:** plain `make install` falls back to ad-hoc signing and a Keychain item without the `.userPresence` ACL. Values stay encrypted at rest, but **the Touch ID gate that anchors the threat model goes away** — any process running as you can read them by calling `SecItemCopyMatching` against an unlocked login Keychain. mima still beats a plaintext `.envrc` (an attacker needs to know mima's service name and call the Keychain API), but the headline biometric-gated property in the [Threat model](#threat-model) is not in effect on this install.
+> **Without a paid signing identity:** plain `make install` signs ad-hoc with no entitlements, and secrets go into the legacy login Keychain without the `.userPresence` ACL. `mima secret add` says so each time, and `mima doctor` reports it. Values stay encrypted at rest, but **the Touch ID gate that anchors the threat model goes away** — any process running as you can read them by calling `SecItemCopyMatching` against an unlocked login Keychain. mima still beats a plaintext `.envrc` (an attacker needs to know mima's service name and call the Keychain API), but the headline biometric-gated property in the [Threat model](#threat-model) is not in effect on this install.
+>
+> **Upgrading from an ad-hoc install:** a signed build won't read secrets stored without protection. It reports them as unprotected instead of silently accepting an item that any process could have planted. `mima doctor` lists them. Re-add each one with `mima secret remove <name>` and then `mima secret add <name>`.
 
 ## Quick start
 
@@ -143,6 +152,14 @@ eval "$(mima env <group>)"
 ```
 
 Prints shell `export` lines. Less private than `mima run` because values land in your interactive shell, but useful when you need secrets for multiple ad-hoc commands. Output is POSIX-single-quote-escaped, so apostrophes and shell metacharacters cannot break the quoting.
+
+### `mima doctor`
+
+```bash
+mima doctor
+```
+
+Checks the binary's team signature and `keychain-access-groups` entitlement. It then stores and deletes a throwaway Touch ID-protected item, with no read and so no prompt. It lists any secrets stored without protection and any group mappings that point at missing secrets. It exits non-zero if anything is wrong.
 
 ## Other use cases
 
