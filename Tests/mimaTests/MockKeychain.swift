@@ -19,6 +19,11 @@ class MockKeychain: KeychainProvider {
         return data
     }
 
+    func update(key: String, value: Data) throws {
+        guard items[key] != nil else { throw KeychainError.itemNotFound }
+        items[key] = value
+    }
+
     func delete(key: String) throws {
         guard items[key] != nil else { throw KeychainError.itemNotFound }
         items[key] = nil

@@ -5,7 +5,7 @@ import Darwin
 struct Secret: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Manage secrets in the Secure Enclave",
-        subcommands: [Add.self, Remove.self, List.self, Get.self]
+        subcommands: [Add.self, Update.self, Remove.self, List.self, Get.self]
     )
     
     struct Add: ParsableCommand {
@@ -14,27 +14,25 @@ struct Secret: ParsableCommand {
         @Argument(help: "The name of the secret")
         var name: String
         
-        @Argument(help: "The value of the secret (optional)")
+        @Argument(help: "The value (optional; avoid it, since it lands in shell history). Without it, mima prompts without echo.")
         var value: String?
-        
+
+        @Flag(help: "Read the value from stdin, e.g. `pbpaste | mima secret add x --stdin`. One trailing newline is stripped.")
+        var stdin = false
+
+        func validate() throws {
+            if stdin && value != nil { throw ValidationError("Pass the value as an argument or with --stdin, not both.") }
+        }
+
         func run() throws {
-            let secretValue: String
-            if let v = value {
-                secretValue = v
-            } else {
-                // Secure input
-                guard let cString = getpass("Enter value for '\(name)': ") else {
-                    print("Error: Failed to read password")
-                    return
-                }
-                secretValue = String(cString: cString)
+            let data: Data
+            do {
+                data = try readSecretValue(prompt: "Enter value for '\(name)': ", inline: value, fromStdin: stdin)
+            } catch {
+                fputs("Error: \(error)\n", stderr)
+                throw ExitCode.failure
             }
-            
-            guard let data = secretValue.data(using: .utf8) else {
-                print("Error: Invalid formatting")
-                return
-            }
-            
+
             let protection: KeychainProtection
             do {
                 protection = try KeychainManager.shared.add(key: name, value: data)
@@ -57,6 +55,40 @@ struct Secret: ParsableCommand {
         }
     }
     
+    struct Update: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Replace an existing secret's value",
+            discussion: "Keeps the secret's name, group mappings, and Touch ID protection. Use after rotating a key."
+        )
+
+        @Argument(help: "The name of the secret")
+        var name: String
+
+        @Argument(help: "The new value (optional; avoid it, since it lands in shell history). Without it, mima prompts without echo.")
+        var value: String?
+
+        @Flag(help: "Read the new value from stdin. One trailing newline is stripped.")
+        var stdin = false
+
+        func validate() throws {
+            if stdin && value != nil { throw ValidationError("Pass the value as an argument or with --stdin, not both.") }
+        }
+
+        func run() throws {
+            do {
+                let data = try readSecretValue(prompt: "New value for '\(name)': ", inline: value, fromStdin: stdin)
+                try KeychainManager.shared.update(key: name, value: data)
+            } catch KeychainError.itemNotFound {
+                fputs("Error: no secret named '\(name)'. Create it with 'mima secret add \(name)'.\n", stderr)
+                throw ExitCode.failure
+            } catch {
+                fputs("Error updating secret '\(name)': \(error)\n", stderr)
+                throw ExitCode.failure
+            }
+            print("🔁 Secret '\(name)' updated.")
+        }
+    }
+
     struct Remove: ParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Remove a secret", aliases: ["rm"])
         

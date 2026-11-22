@@ -4,7 +4,7 @@ import Foundation
 struct Group: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Manage Identity Groups and their environment mappings",
-        subcommands: [Link.self, List.self]
+        subcommands: [Link.self, Unlink.self, Remove.self, List.self]
     )
     
     struct Link: ParsableCommand {
@@ -41,6 +41,46 @@ struct Group: ParsableCommand {
         }
     }
     
+    struct Unlink: ParsableCommand {
+        static let configuration = CommandConfiguration(abstract: "Remove one variable from a group (the secret stays in the Keychain)")
+
+        @Argument(help: "The group name")
+        var group: String
+
+        @Argument(help: "The environment variable to remove")
+        var envVar: String
+
+        func run() throws {
+            do {
+                try ConfigManager.shared.unlink(group: group, envVar: envVar)
+            } catch let error as ConfigError {
+                fputs("Error: \(error)\n", stderr)
+                throw ExitCode.failure
+            }
+            print("✂️  Unlinked '\(envVar)' from group '\(group)'.")
+        }
+    }
+
+    struct Remove: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Delete a group's mappings (the secrets stay in the Keychain)",
+            aliases: ["rm"]
+        )
+
+        @Argument(help: "The group name")
+        var group: String
+
+        func run() throws {
+            do {
+                try ConfigManager.shared.removeGroup(group)
+            } catch let error as ConfigError {
+                fputs("Error: \(error)\n", stderr)
+                throw ExitCode.failure
+            }
+            print("🗑️  Removed group '\(group)'. Its secrets are still in the Keychain ('mima secret list').")
+        }
+    }
+
     struct List: ParsableCommand {
         static let configuration = CommandConfiguration(abstract: "List all groups and mappings")
         

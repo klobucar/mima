@@ -32,6 +32,29 @@ final class ConfigManagerTests: XCTestCase {
         XCTAssertEqual(config.groups["g1"]?["K"], "S")
     }
     
+    func testUnlinkRemovesVariableAndEmptyGroup() throws {
+        try manager.link(group: "g", envVar: "A", secretName: "s1")
+        try manager.link(group: "g", envVar: "B", secretName: "s2")
+        try manager.unlink(group: "g", envVar: "A")
+        XCTAssertEqual(try manager.getSecrets(for: "g"), ["B": "s2"])
+        try manager.unlink(group: "g", envVar: "B")
+        XCTAssertNil(try manager.load().groups["g"], "an emptied group should disappear")
+    }
+
+    func testUnlinkAndRemoveReportMissingTargets() throws {
+        try manager.link(group: "g", envVar: "A", secretName: "s1")
+        XCTAssertThrowsError(try manager.unlink(group: "nope", envVar: "A"))
+        XCTAssertThrowsError(try manager.unlink(group: "g", envVar: "NOPE"))
+        XCTAssertThrowsError(try manager.removeGroup("nope"))
+    }
+
+    func testRemoveGroupLeavesOthers() throws {
+        try manager.link(group: "g1", envVar: "A", secretName: "s1")
+        try manager.link(group: "g2", envVar: "B", secretName: "s2")
+        try manager.removeGroup("g1")
+        XCTAssertEqual(Array(try manager.load().groups.keys), ["g2"])
+    }
+
     func testMultipleGroups() throws {
         try manager.link(group: "g1", envVar: "K1", secretName: "S1")
         try manager.link(group: "g2", envVar: "K2", secretName: "S2")

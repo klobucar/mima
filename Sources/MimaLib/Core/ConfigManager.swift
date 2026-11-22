@@ -6,6 +6,18 @@ public struct MimaConfig: Codable {
     public init() {}
 }
 
+public enum ConfigError: Error, CustomStringConvertible {
+    case groupNotFound(String)
+    case mappingNotFound(group: String, envVar: String)
+
+    public var description: String {
+        switch self {
+        case .groupNotFound(let g): return "no group named \(g.debugDescription)"
+        case .mappingNotFound(let g, let v): return "group \(g.debugDescription) has no variable \(v.debugDescription)"
+        }
+    }
+}
+
 public class ConfigManager {
     public static let shared = ConfigManager()
     
@@ -60,6 +72,24 @@ public class ConfigManager {
         try save(config)
     }
     
+    /// Removes one variable from a group. A group left empty is removed.
+    public func unlink(group: String, envVar: String) throws {
+        var config = try load()
+        guard var mappings = config.groups[group] else { throw ConfigError.groupNotFound(group) }
+        guard mappings.removeValue(forKey: envVar) != nil else {
+            throw ConfigError.mappingNotFound(group: group, envVar: envVar)
+        }
+        config.groups[group] = mappings.isEmpty ? nil : mappings
+        try save(config)
+    }
+
+    /// Removes a group's mappings. The secrets stay in the Keychain.
+    public func removeGroup(_ group: String) throws {
+        var config = try load()
+        guard config.groups.removeValue(forKey: group) != nil else { throw ConfigError.groupNotFound(group) }
+        try save(config)
+    }
+
     public func list() throws -> String {
         let config = try load()
         let encoder = YAMLEncoder()

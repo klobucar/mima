@@ -16,6 +16,8 @@ public protocol KeychainProvider {
     @discardableResult
     func add(key: String, value: Data) throws -> KeychainProtection
     func get(key: String, context: LAContext?) throws -> Data
+    /// Replaces an existing secret's value, keeping its protection.
+    func update(key: String, value: Data) throws
     func delete(key: String) throws
     func list() throws -> [String]
 }
@@ -140,6 +142,18 @@ public class NativeKeychain: KeychainProvider {
         guard status == errSecSuccess else { throw KeychainError.unknown(status) }
         guard let data = item as? Data else { throw KeychainError.invalidData }
         return data
+    }
+
+    public func update(key: String, value: Data) throws {
+        let status = SecItemUpdate(
+            query(key, dataProtection: isEntitled) as CFDictionary,
+            [kSecValueData as String: value] as CFDictionary
+        )
+        if status == errSecItemNotFound {
+            if isEntitled && legacyItemExists(key) { throw KeychainError.unprotectedItemOnly(key) }
+            throw KeychainError.itemNotFound
+        }
+        guard status == errSecSuccess else { throw KeychainError.unknown(status) }
     }
 
     /// Removes the secret from the keychain this build uses. An entitled

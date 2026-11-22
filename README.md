@@ -102,8 +102,10 @@ One Touch ID prompt. `claude-code` starts with `OPENAI_API_KEY` and `ANTHROPIC_A
 ### `mima secret`
 
 ```bash
-mima secret add <name>              # prompt securely (getpass)
+mima secret add <name>              # prompt without echo (up to 8 KB; longer is an error, never truncated)
+pbpaste | mima secret add <name> --stdin   # read from stdin; one trailing newline stripped
 mima secret add <name> <value>      # inline — avoid, goes into shell history
+mima secret update <name> [--stdin] # replace the value after rotating a key; keeps mappings and protection
 mima secret rm <name>
 mima secret list                    # names only, no values
 mima secret get <name>              # print value; warns to stderr
@@ -114,6 +116,8 @@ mima secret get <name> --export     # print `export NAME=VALUE`
 
 ```bash
 mima group link <group> <ENV_VAR> <secret-name>
+mima group unlink <group> <ENV_VAR>    # drop one variable; the secret stays in the Keychain
+mima group rm <group>                  # drop the whole group; secrets stay in the Keychain
 mima group list
 ```
 
@@ -128,6 +132,14 @@ groups:
     DATABASE_URL: dev-db
     STRIPE_KEY: stripe-test
 ```
+
+### `mima import`
+
+```bash
+mima import .env --group myapp [--prefix myapp] [--overwrite]
+```
+
+Moves a `.env` file into the Keychain. Each `KEY=value` becomes a secret named `<prefix>-<key>` (for example `myapp-stripe-key`) and a `KEY` mapping in the group. It handles `export`, comments, and single, double, and multi-line quoted values. It does no `${VAR}` expansion. Existing secrets are skipped unless you pass `--overwrite`. mima never prints the values and never deletes the file. It reminds you that the values were in plaintext, so rotate them if the file was ever committed or shared, then delete it yourself.
 
 ### `mima run`
 
