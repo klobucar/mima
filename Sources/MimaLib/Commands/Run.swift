@@ -66,7 +66,7 @@ struct Run: ParsableCommand {
         // 1. Load Config
         let mappings = try ConfigManager.shared.getSecrets(for: group)
         if mappings.isEmpty {
-            print("⚠️ No secrets found for group '\(group)'. Running command explicitly without added secrets.")
+            fputs("⚠️ No secrets found for group '\(group)'. Running the command without added secrets.\n", stderr)
         }
 
         // Each name becomes the part of a `NAME=value` envp entry before
@@ -97,7 +97,7 @@ struct Run: ParsableCommand {
                 throw ExitCode.failure
             }
 
-            print("🔓 Authenticating for '\(group)'...")
+            fputs("🔓 Authenticating for '\(group)'...\n", stderr)
 
             for (envVar, secretName) in mappings {
                 do {
