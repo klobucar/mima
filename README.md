@@ -151,6 +151,36 @@ mima import .env --group myapp [--prefix myapp] [--overwrite]
 
 Moves a `.env` file into the Keychain. Each `KEY=value` becomes a secret named `<prefix>-<key>` (for example `myapp-stripe-key`) and a `KEY` mapping in the group. It handles `export`, comments, and single, double, and multi-line quoted values. It does no `${VAR}` expansion. Existing secrets are skipped unless you pass `--overwrite`. mima never prints the values and never deletes the file. It reminds you that the values were in plaintext, so rotate them if the file was ever committed or shared, then delete it yourself.
 
+### `mima mcp import`
+
+```bash
+mima mcp import                 # dry run: show what would move (names only, never values)
+mima mcp import --apply         # do it (quit Claude Code / Claude Desktop / Cursor first)
+mima mcp import --apply --scrub # launch servers with only their group + safelist
+```
+
+MCP server configs are often the biggest pile of plaintext credentials in an agent setup, and MCP servers run outside any agent sandbox. This command scans:
+- `~/.claude.json`, including per-project servers;
+- `./.mcp.json`;
+- Claude Desktop's `claude_desktop_config.json`;
+- `~/.cursor/mcp.json`.
+
+For each stdio server whose `env` holds a literal credential, mima:
+- stores the value in the Keychain;
+- links it into a group `mcp-<server>`;
+- rewrites the server to launch through `mima run mcp-<server> -- <original command>`.
+
+A variable counts as a credential if its name has a part like `KEY`, `TOKEN`, `SECRET`, or `PASSWORD`, or if its value is a URL with a password in it. Pass `--all` to move every literal value.
+
+Remote servers, servers already wrapped by mima, and `${VAR}` references are left alone. With `--scrub`, variables still listed in the config are passed through with `--keep`.
+
+Safety measures:
+- Before rewriting, mima writes a 0600 backup.
+- It refuses to touch a config while its app is running, since the app could write the plaintext back. `--force` overrides.
+- It doesn't rewrite a file that changed while it was working.
+
+The backups still contain the plaintext, so delete them once the servers work. If a config was ever committed or synced (`.mcp.json` often is), rotate the values.
+
 ### `mima run`
 
 ```bash
