@@ -66,6 +66,17 @@ final class CommandParsingTests: XCTestCase {
         XCTAssertThrowsError(try parseRun(["g", "--keep=X", "claude"]))
     }
 
+    func testClaudeFlagParsesAndRejectsMask() throws {
+        XCTAssertTrue(try parseRun(["--claude", "--scrub", "g", "--", "claude"]).claude)
+        XCTAssertThrowsError(try parseRun(["--claude", "--mask", "g", "--", "claude"]))
+        XCTAssertThrowsError(try parseRun(["g", "--claude", "claude"]), "flag after the group is an error")
+    }
+
+    func testGroupLinkHostValidation() {
+        XCTAssertNoThrow(try MimaApp.parseAsRoot(["group", "link", "g", "GH_TOKEN", "gh", "--host", "api.github.com"]))
+        XCTAssertThrowsError(try MimaApp.parseAsRoot(["group", "link", "g", "GH_TOKEN", "gh", "--host", "https://api.github.com"]))
+    }
+
     // MARK: - mima secret rm
 
     func testSecretRmAliasResolvesToRemove() throws {
@@ -73,6 +84,31 @@ final class CommandParsingTests: XCTestCase {
         let remove = try XCTUnwrap(command as? Secret.Remove)
         XCTAssertEqual(remove.name, "openai-key")
         XCTAssertNotNil(try MimaApp.parseAsRoot(["secret", "remove", "openai-key"]) as? Secret.Remove)
+    }
+
+    // MARK: - Lifecycle commands
+
+    func testSecretAddStdinAndValueAreExclusive() {
+        XCTAssertNoThrow(try MimaApp.parseAsRoot(["secret", "add", "k", "--stdin"]))
+        XCTAssertThrowsError(try MimaApp.parseAsRoot(["secret", "add", "k", "v", "--stdin"]))
+    }
+
+    func testSecretUpdateParses() throws {
+        let update = try XCTUnwrap(MimaApp.parseAsRoot(["secret", "update", "k", "--stdin"]) as? Secret.Update)
+        XCTAssertTrue(update.stdin)
+    }
+
+    func testGroupUnlinkAndRemove() throws {
+        XCTAssertNotNil(try MimaApp.parseAsRoot(["group", "unlink", "g", "VAR"]) as? Group.Unlink)
+        XCTAssertNotNil(try MimaApp.parseAsRoot(["group", "rm", "g"]) as? Group.Remove)
+        XCTAssertNotNil(try MimaApp.parseAsRoot(["group", "remove", "g"]) as? Group.Remove)
+    }
+
+    func testImportRequiresGroup() throws {
+        XCTAssertThrowsError(try MimaApp.parseAsRoot(["import", ".env"]))
+        let cmd = try XCTUnwrap(MimaApp.parseAsRoot(["import", ".env", "--group", "app", "--overwrite"]) as? Import)
+        XCTAssertEqual(cmd.group, "app")
+        XCTAssertTrue(cmd.overwrite)
     }
 
     // MARK: - Env-var name validation at the CLI boundary

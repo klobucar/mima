@@ -42,6 +42,37 @@ Without `--scrub`, the agent also inherits your full shell environment — the g
 
 Delete the group when you're done with a project; the underlying secret stays in the Keychain for reuse elsewhere.
 
+### Claude Code: hide values from sandboxed commands
+
+`--scrub` limits what the agent *process* gets. With Claude Code you can go further: its sandbox can keep a variable's real value away from the shell commands the agent runs.
+
+```bash
+mima group link agent-claude GH_TOKEN gh-agent-readonly --host api.github.com
+mima group link agent-claude DATABASE_URL dev-db
+mima run --claude --scrub agent-claude -- claude
+```
+
+`--claude` inserts `--settings` into the `claude` command line, enabling Claude Code's sandbox credential controls for the group:
+
+- **Variables linked with `--host` are masked.** Sandboxed Bash sees a per-session placeholder. Claude Code's proxy substitutes the real value only on requests to those hosts, so `curl https://api.github.com` works but `echo $GH_TOKEN` or a post to an attacker's server gets the placeholder. This uses Claude Code's experimental `sandbox.network.tlsTerminate`.
+- **Variables without hosts are denied:** sandboxed commands don't get them at all.
+
+Limits:
+- This covers sandboxed Bash only. The Claude Code process itself has the real values, and per Claude Code's docs, hooks and local MCP servers run with your full access.
+- It requires a Claude Code version with sandbox credential settings.
+- Claude Code honors these only from user settings, managed settings, or `--settings`, never from a repo's `.claude/settings.json`. That's why mima passes them on the command line.
+- mima checks that the command is `claude`, and refuses if you already pass `--settings`.
+
+### What happens when the agent asks mima for more
+
+An agent can run `mima` itself. mima watches for this:
+
+- **The Touch ID prompt says exactly what's being released and who asked.** For example: *"mima is trying to give 2 secrets from group 'prod' to curl (aws-prod, stripe-live). ⚠️ Requested by an AI agent (Claude Code) via zsh → claude → zsh → mima"*. Because it lists the actual secret names, a group quietly remapped in `~/.mima.yaml` shows up at approval time.
+- **`mima env` and `mima secret get` refuse to print values when started by an agent.** Anything they print would land in the agent's transcript. They also refuse when there's no terminal at all. `eval "$(mima env g)"` in your own shell still works, and scripts you trust can pass `--force`.
+- **How agents are recognized:** `CLAUDE_CODE_CHILD_SESSION=1`, or an agent anywhere in the parent-process chain (`claude`, `codex`, `aider`, `cursor-agent`, `gemini`, `opencode`, `goose`, including npm-installed and versioned binaries). `CLAUDECODE=1` alone doesn't count, because Claude Code's IDE extensions set it in terminals you type into.
+
+This is a speed bump, not a boundary. The agent runs as you: it can unset variables, double-fork out of the process tree, or pass `--force` itself. The control that holds is the Touch ID prompt, which now tells you when an agent is asking. `mima run` isn't refused under an agent, since running tests with a group's secrets is a legitimate request. It just gets the labeled prompt.
+
 > **Why not `env -i`?**
 > `env -i cmd` scrubs the inherited env — correct, but it doesn't give you any way to re-inject the scoped values the agent actually needs. mima is the "where do those values come from" half: Keychain-stored, biometric-gated, declared as a group. `mima run --scrub` combines both: strip the parent env, inject only the group, keep a minimal safelist like `PATH`, `HOME`, `TERM`.
 
@@ -102,8 +133,10 @@ One Touch ID prompt. `claude-code` starts with `OPENAI_API_KEY` and `ANTHROPIC_A
 ### `mima secret`
 
 ```bash
-mima secret add <name>              # prompt securely (getpass)
+mima secret add <name>              # prompt without echo (up to 8 KB; longer is an error, never truncated)
+pbpaste | mima secret add <name> --stdin   # read from stdin; one trailing newline stripped
 mima secret add <name> <value>      # inline — avoid, goes into shell history
+mima secret update <name> [--stdin] # replace the value after rotating a key; keeps mappings and protection
 mima secret rm <name>
 mima secret list                    # names only, no values
 mima secret get <name>              # print value; warns to stderr
@@ -114,6 +147,9 @@ mima secret get <name> --export     # print `export NAME=VALUE`
 
 ```bash
 mima group link <group> <ENV_VAR> <secret-name>
+mima group link <group> <ENV_VAR> <secret-name> --host api.github.com   # for run --claude masking
+mima group unlink <group> <ENV_VAR>    # drop one variable; the secret stays in the Keychain
+mima group rm <group>                  # drop the whole group; secrets stay in the Keychain
 mima group list
 ```
 
@@ -127,7 +163,49 @@ groups:
   dev:
     DATABASE_URL: dev-db
     STRIPE_KEY: stripe-test
+  agent-claude:
+    GH_TOKEN:                       # long form, written by --host
+      secret: gh-agent-readonly
+      hosts: [api.github.com]
 ```
+
+### `mima import`
+
+```bash
+mima import .env --group myapp [--prefix myapp] [--overwrite]
+```
+
+Moves a `.env` file into the Keychain. Each `KEY=value` becomes a secret named `<prefix>-<key>` (for example `myapp-stripe-key`) and a `KEY` mapping in the group. It handles `export`, comments, and single, double, and multi-line quoted values. It does no `${VAR}` expansion. Existing secrets are skipped unless you pass `--overwrite`. mima never prints the values and never deletes the file. It reminds you that the values were in plaintext, so rotate them if the file was ever committed or shared, then delete it yourself.
+
+### `mima mcp import`
+
+```bash
+mima mcp import                 # dry run: show what would move (names only, never values)
+mima mcp import --apply         # do it (quit Claude Code / Claude Desktop / Cursor first)
+mima mcp import --apply --scrub # launch servers with only their group + safelist
+```
+
+MCP server configs are often the biggest pile of plaintext credentials in an agent setup, and MCP servers run outside any agent sandbox. This command scans:
+- `~/.claude.json`, including per-project servers;
+- `./.mcp.json`;
+- Claude Desktop's `claude_desktop_config.json`;
+- `~/.cursor/mcp.json`.
+
+For each stdio server whose `env` holds a literal credential, mima:
+- stores the value in the Keychain;
+- links it into a group `mcp-<server>`;
+- rewrites the server to launch through `mima run mcp-<server> -- <original command>`.
+
+A variable counts as a credential if its name has a part like `KEY`, `TOKEN`, `SECRET`, or `PASSWORD`, or if its value is a URL with a password in it. Pass `--all` to move every literal value.
+
+Remote servers, servers already wrapped by mima, and `${VAR}` references are left alone. With `--scrub`, variables still listed in the config are passed through with `--keep`.
+
+Safety measures:
+- Before rewriting, mima writes a 0600 backup.
+- It refuses to touch a config while its app is running, since the app could write the plaintext back. `--force` overrides.
+- It doesn't rewrite a file that changed while it was working.
+
+The backups still contain the plaintext, so delete them once the servers work. If a config was ever committed or synced (`.mcp.json` often is), rotate the values.
 
 ### `mima run`
 
@@ -142,6 +220,12 @@ Unlocks the group's secrets behind a single `LAContext`, then `execve`s the comm
 - **Default:** the envp is your current env plus the group's values (a group value wins over a same-named shell variable).
 - **`--scrub`:** the envp is *only* the group's values plus `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TMPDIR`, `LANG`, `TZ`, and `LC_*`. `TMPDIR` stays because macOS points it at a per-user directory; without it, tools fall back to the shared `/tmp`. `SSH_AUTH_SOCK` is deliberately excluded — it lets the child authenticate and sign as you over SSH.
 - **`--keep VAR`** (repeatable, requires `--scrub`): pass one more variable through.
+- **`--mask`:** replaces every secret value in the command's stdout and stderr with `<mima:NAME>`. That covers raw and JSON-escaped forms, and values split across reads. Use it when output lands somewhere persistent, like an agent transcript or CI log: `curl -v` and debug prints are the usual leaks. Costs:
+  - mima stays running for the command's lifetime, holding the values in memory to match against, instead of handing off with `execve`;
+  - the command's stdout and stderr become pipes rather than a terminal, so colors and full-screen TUIs may degrade;
+  - values shorter than 4 bytes aren't masked, and mima says which.
+
+  Exit codes and signals pass through.
 
 Options go before the group name. Everything after the group belongs to the command, so `mima run g --scrub -- cmd` is rejected with an error rather than silently running unscrubbed.
 
@@ -225,7 +309,12 @@ mima's design is shaped by the class of attacks that dominates 2023–present: *
 ### What mima does not defend against
 
 - **Malicious children leaking the env they received.** Once the child has the variable, it can send it anywhere. Defense is narrow groups + sandboxing (devcontainer, firejail, macOS app sandbox).
-- **Deceptive Touch ID prompts.** An attacker who can invoke the mima binary can trigger a legitimate biometric prompt. User vigilance is the only thing stopping a reflexive approval.
+- **Deceptive Touch ID prompts.** An attacker who can invoke the mima binary can trigger a legitimate biometric prompt. mima narrows this:
+  - the prompt names the exact secrets, the command, and the parent-process chain;
+  - it flags requests from AI agents;
+  - names are stripped of control and bidi characters so they can't fake text in the dialog.
+
+  But a determined same-user attacker can still spoof its process tree, so your attention at the prompt is the last line of defense.
 - **Shell-level compromise.** If your `.zshrc`, a shell plugin, or a supply-chain-compromised tool has injected code into your shell, mima runs inside that trust boundary and can't help.
 - **Session agent TTL window.** When the session agent ships, unlocked values will sit in memory for a configurable interval. During that window, a supply-chain attacker running as you can read them without triggering a biometric prompt — the same class of risk `ssh-agent` and `op` accept. Short TTLs mitigate; they do not eliminate.
 - **`mima env` + `eval`.** After you eval the output, values are in the shell `environ` for the rest of the session. Same threat surface as plain `export`. Use deliberately.

@@ -61,8 +61,8 @@ struct Doctor: ParsableCommand {
         let known = Set(protected + (keychain.isEntitled ? [] : unprotected))
         let config = try ConfigManager.shared.load()
         for (group, mappings) in config.groups.sorted(by: { $0.key < $1.key }) {
-            for (envVar, secret) in mappings.sorted(by: { $0.key < $1.key }) where !known.contains(secret) {
-                bad("Group \(group.debugDescription): \(envVar.debugDescription) -> missing secret \(secret.debugDescription)")
+            for (envVar, mapping) in mappings.sorted(by: { $0.key < $1.key }) where !known.contains(mapping.secret) {
+                bad("Group \(group.debugDescription): \(envVar.debugDescription) -> missing secret \(mapping.secret.debugDescription)")
             }
         }
 

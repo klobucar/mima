@@ -4,7 +4,7 @@ import Foundation
 struct Group: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Manage Identity Groups and their environment mappings",
-        subcommands: [Link.self, List.self]
+        subcommands: [Link.self, Unlink.self, Remove.self, List.self]
     )
     
     struct Link: ParsableCommand {
@@ -19,9 +19,18 @@ struct Group: ParsableCommand {
         @Argument(help: "The name of the secret in Keychain")
         var secretName: String
 
+        @Option(
+            name: .customLong("host"),
+            help: ArgumentHelp("With 'mima run --claude', the host Claude Code's sandbox may send the real value to (others see a placeholder). Repeatable.", valueName: "host")
+        )
+        var hosts: [String] = []
+
         func validate() throws {
             guard isValidEnvVarName(envVar) else {
                 throw ValidationError(InvalidEnvVarName(name: envVar).description)
+            }
+            for host in hosts where !isValidInjectHost(host) {
+                throw ValidationError("--host: \(host.debugDescription) is not a hostname (e.g. api.github.com or *.example.com)")
             }
         }
 
@@ -36,11 +45,51 @@ struct Group: ParsableCommand {
                 print("⚠️ Warning: Could not verify secret existence: \(error)")
             }
             
-            try ConfigManager.shared.link(group: group, envVar: envVar, secretName: secretName)
+            try ConfigManager.shared.link(group: group, envVar: envVar, secretName: secretName, hosts: hosts.map { $0.lowercased() })
             print("🔗 Linked '\(envVar)' -> '\(secretName)' in group '\(group)'.")
         }
     }
     
+    struct Unlink: ParsableCommand {
+        static let configuration = CommandConfiguration(abstract: "Remove one variable from a group (the secret stays in the Keychain)")
+
+        @Argument(help: "The group name")
+        var group: String
+
+        @Argument(help: "The environment variable to remove")
+        var envVar: String
+
+        func run() throws {
+            do {
+                try ConfigManager.shared.unlink(group: group, envVar: envVar)
+            } catch let error as ConfigError {
+                fputs("Error: \(error)\n", stderr)
+                throw ExitCode.failure
+            }
+            print("✂️  Unlinked '\(envVar)' from group '\(group)'.")
+        }
+    }
+
+    struct Remove: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Delete a group's mappings (the secrets stay in the Keychain)",
+            aliases: ["rm"]
+        )
+
+        @Argument(help: "The group name")
+        var group: String
+
+        func run() throws {
+            do {
+                try ConfigManager.shared.removeGroup(group)
+            } catch let error as ConfigError {
+                fputs("Error: \(error)\n", stderr)
+                throw ExitCode.failure
+            }
+            print("🗑️  Removed group '\(group)'. Its secrets are still in the Keychain ('mima secret list').")
+        }
+    }
+
     struct List: ParsableCommand {
         static let configuration = CommandConfiguration(abstract: "List all groups and mappings")
         
@@ -53,8 +102,9 @@ struct Group: ParsableCommand {
             
             for (group, vars) in config.groups {
                 print("📦 \(group)")
-                for (env, secret) in vars {
-                    print("  ├─ \(env) -> \(secret)")
+                for (env, mapping) in vars.sorted(by: { $0.key < $1.key }) {
+                    let hosts = mapping.hosts.isEmpty ? "" : "  (--claude injects into: \(mapping.hosts.joined(separator: ", ")))"
+                    print("  ├─ \(env) -> \(mapping.secret)\(hosts)")
                 }
             }
         }

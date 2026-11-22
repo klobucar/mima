@@ -1,11 +1,12 @@
 import ArgumentParser
 import Foundation
 import Darwin
+import LocalAuthentication
 
 struct Secret: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Manage secrets in the Secure Enclave",
-        subcommands: [Add.self, Remove.self, List.self, Get.self]
+        subcommands: [Add.self, Update.self, Remove.self, List.self, Get.self]
     )
     
     struct Add: ParsableCommand {
@@ -14,27 +15,25 @@ struct Secret: ParsableCommand {
         @Argument(help: "The name of the secret")
         var name: String
         
-        @Argument(help: "The value of the secret (optional)")
+        @Argument(help: "The value (optional; avoid it, since it lands in shell history). Without it, mima prompts without echo.")
         var value: String?
-        
+
+        @Flag(help: "Read the value from stdin, e.g. `pbpaste | mima secret add x --stdin`. One trailing newline is stripped.")
+        var stdin = false
+
+        func validate() throws {
+            if stdin && value != nil { throw ValidationError("Pass the value as an argument or with --stdin, not both.") }
+        }
+
         func run() throws {
-            let secretValue: String
-            if let v = value {
-                secretValue = v
-            } else {
-                // Secure input
-                guard let cString = getpass("Enter value for '\(name)': ") else {
-                    print("Error: Failed to read password")
-                    return
-                }
-                secretValue = String(cString: cString)
+            let data: Data
+            do {
+                data = try readSecretValue(prompt: "Enter value for '\(name)': ", inline: value, fromStdin: stdin)
+            } catch {
+                fputs("Error: \(error)\n", stderr)
+                throw ExitCode.failure
             }
-            
-            guard let data = secretValue.data(using: .utf8) else {
-                print("Error: Invalid formatting")
-                return
-            }
-            
+
             let protection: KeychainProtection
             do {
                 protection = try KeychainManager.shared.add(key: name, value: data)
@@ -57,6 +56,40 @@ struct Secret: ParsableCommand {
         }
     }
     
+    struct Update: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Replace an existing secret's value",
+            discussion: "Keeps the secret's name, group mappings, and Touch ID protection. Use after rotating a key."
+        )
+
+        @Argument(help: "The name of the secret")
+        var name: String
+
+        @Argument(help: "The new value (optional; avoid it, since it lands in shell history). Without it, mima prompts without echo.")
+        var value: String?
+
+        @Flag(help: "Read the new value from stdin. One trailing newline is stripped.")
+        var stdin = false
+
+        func validate() throws {
+            if stdin && value != nil { throw ValidationError("Pass the value as an argument or with --stdin, not both.") }
+        }
+
+        func run() throws {
+            do {
+                let data = try readSecretValue(prompt: "New value for '\(name)': ", inline: value, fromStdin: stdin)
+                try KeychainManager.shared.update(key: name, value: data)
+            } catch KeychainError.itemNotFound {
+                fputs("Error: no secret named '\(name)'. Create it with 'mima secret add \(name)'.\n", stderr)
+                throw ExitCode.failure
+            } catch {
+                fputs("Error updating secret '\(name)': \(error)\n", stderr)
+                throw ExitCode.failure
+            }
+            print("🔁 Secret '\(name)' updated.")
+        }
+    }
+
     struct Remove: ParsableCommand {
         static let configuration = CommandConfiguration(abstract: "Remove a secret", aliases: ["rm"])
         
@@ -82,6 +115,9 @@ struct Secret: ParsableCommand {
         @Flag(help: "Format as 'export NAME=VALUE' for eval")
         var export: Bool = false
 
+        @Flag(help: "Print even when started by an AI agent or without a terminal. The Touch ID prompt still names the caller.")
+        var force = false
+
         /// Infer the env var from the secret name: test-key -> TEST_KEY.
         static func exportName(for name: String) -> String {
             name.uppercased().replacingOccurrences(of: "-", with: "_")
@@ -100,9 +136,20 @@ struct Secret: ParsableCommand {
         func run() throws {
             // Warning to stderr
             fputs("⚠️  Warning: Secret loaded into shell history/logs.\n", stderr)
-            
+
+            let chain = currentCallerChain()
+            let agent = detectAgent(environment: ProcessInfo.processInfo.environment, chain: chain)
+            if let refusal = secretOutputRefusal(
+                force: force, agent: agent, chain: chain, stdinIsTTY: isTTY(STDIN_FILENO), stderrIsTTY: isTTY(STDERR_FILENO)
+            ) {
+                fputs(refusal + "\n", stderr)
+                throw ExitCode.failure
+            }
+            let context = LAContext()
+            context.localizedReason = unlockReason(action: "print a secret", secrets: [name], chain: chain, agent: agent)
+
             do {
-                let data = try KeychainManager.shared.get(key: name, context: nil)
+                let data = try KeychainManager.shared.get(key: name, context: context)
                 guard let value = String(data: data, encoding: .utf8) else {
                     print("Error: Invalid UTF-8 data")
                     return

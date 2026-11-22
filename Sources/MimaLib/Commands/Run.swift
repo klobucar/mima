@@ -26,6 +26,12 @@ struct Run: ParsableCommand {
     )
     var keep: [String] = []
 
+    @Flag(help: "Replace secret values in the command's output with <mima:NAME>. The command's stdout and stderr become pipes, not a terminal, and mima stays running alongside it.")
+    var mask = false
+
+    @Flag(help: "For `mima run --claude <group> -- claude`: also tell Claude Code's sandbox to hide the group's values from sandboxed Bash. Variables linked with --host are masked and sent only to those hosts; the rest are denied.")
+    var claude = false
+
     @Argument(help: "The group to load secrets for")
     var group: String
 
@@ -42,6 +48,9 @@ struct Run: ParsableCommand {
     }
 
     func validate() throws {
+        if claude && mask {
+            throw ValidationError("--mask turns claude's terminal into a pipe; use --claude without --mask.")
+        }
         if !keep.isEmpty && !scrub {
             throw ValidationError("--keep only applies with --scrub (without it the command already inherits everything).")
         }
@@ -51,22 +60,31 @@ struct Run: ParsableCommand {
         // Everything after the group is captured for the child, so
         // `mima run g --scrub -- cmd` would try to exec "--scrub" and
         // silently skip the scrub. Catch that with a clear message.
-        if let first = childArgv.first, first == "--scrub" || first == "--keep" || first.hasPrefix("--keep=") {
+        if let first = childArgv.first, ["--scrub", "--mask", "--claude"].contains(first) || first == "--keep" || first.hasPrefix("--keep=") {
             throw ValidationError("Put \(first) before the group name: mima run \(first) <group> -- <command>")
         }
     }
 
     func run() throws {
-        let command = childArgv
+        var command = childArgv
         guard !command.isEmpty else {
             fputs("Error: No command provided.\n", stderr)
             throw ExitCode.validationFailure
         }
 
         // 1. Load Config
-        let mappings = try ConfigManager.shared.getSecrets(for: group)
+        let fullMappings = try ConfigManager.shared.getMappings(for: group)
+        let mappings = fullMappings.mapValues(\.secret)
+        if claude {
+            do {
+                command = try claudeArgv(command, mappings: fullMappings)
+            } catch {
+                fputs("Error: \(error)\n", stderr)
+                throw ExitCode.validationFailure
+            }
+        }
         if mappings.isEmpty {
-            print("⚠️ No secrets found for group '\(group)'. Running command explicitly without added secrets.")
+            fputs("⚠️ No secrets found for group '\(group)'. Running the command without added secrets.\n", stderr)
         }
 
         // Each name becomes the part of a `NAME=value` envp entry before
@@ -84,8 +102,15 @@ struct Run: ParsableCommand {
         var secretsEnv: [String: String] = [:]
 
         if !mappings.isEmpty {
+            // Name the exact secrets, the command, and who asked, so a
+            // remapped group or an agent's request is visible in the prompt.
+            let chain = currentCallerChain()
             let context = LAContext()
-            context.localizedReason = "Access secrets for '\(group)'"
+            context.localizedReason = unlockReason(
+                action: "give \(mappings.count) secret\(mappings.count == 1 ? "" : "s") from group '\(sanitizeForPrompt(group, limit: 32))' to \(sanitizeForPrompt((command[0] as NSString).lastPathComponent, limit: 32))",
+                secrets: Array(mappings.values), chain: chain,
+                agent: detectAgent(environment: ProcessInfo.processInfo.environment, chain: chain)
+            )
 
             // Match the items' `.userPresence` ACL, which accepts Touch ID
             // or the login password. A biometrics-only check refused to run
@@ -97,7 +122,7 @@ struct Run: ParsableCommand {
                 throw ExitCode.failure
             }
 
-            print("🔓 Authenticating for '\(group)'...")
+            fputs("🔓 Authenticating for '\(group)'...\n", stderr)
 
             for (envVar, secretName) in mappings {
                 do {
@@ -136,6 +161,22 @@ struct Run: ParsableCommand {
                 throw ExitCode.failure
             }
             resolvedPath = found
+        }
+
+        // 5a. --mask: stay alive and filter the child's output.
+        if mask {
+            let unmasked = OutputMasker.unmaskedNames(secretsEnv)
+            if !unmasked.isEmpty {
+                fputs("⚠️  Not masking \(unmasked.joined(separator: ", ")): shorter than \(OutputMasker.minimumLength) bytes.\n", stderr)
+            }
+            let code: Int32
+            do {
+                code = try runMasked(path: resolvedPath, argv: command, env: childEnv, secrets: secretsEnv)
+            } catch {
+                fputs("Error executing '\(resolvedPath)': \(error.localizedDescription)\n", stderr)
+                throw ExitCode.failure
+            }
+            throw ExitCode(code)
         }
 
         // 5. Hand off to execve. On success this call replaces the

@@ -9,7 +9,7 @@ public struct MimaApp: ParsableCommand {
            Split Identity. Keep it real.
         """,
         version: "0.1.0",
-        subcommands: [Secret.self, Group.self, Run.self, Env.self, Doctor.self],
+        subcommands: [Secret.self, Group.self, Run.self, Env.self, Import.self, MCP.self, Doctor.self],
         defaultSubcommand: nil
     )
 }
