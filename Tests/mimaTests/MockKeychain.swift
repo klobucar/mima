@@ -5,9 +5,13 @@ import MimaLib
 class MockKeychain: KeychainProvider {
     var items: [String: Data] = [:]
 
-    func add(key: String, value: Data) throws {
+    var protection: KeychainProtection = .userPresence
+
+    @discardableResult
+    func add(key: String, value: Data) throws -> KeychainProtection {
         if items[key] != nil { throw KeychainError.duplicateEntry }
         items[key] = value
+        return protection
     }
 
     func get(key: String, context: LAContext?) throws -> Data {

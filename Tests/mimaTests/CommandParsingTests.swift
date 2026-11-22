@@ -32,6 +32,40 @@ final class CommandParsingTests: XCTestCase {
         )
     }
 
+    // MARK: - mima run --scrub / --keep
+
+    func testScrubFlagBeforeGroup() throws {
+        let run = try parseRun(["--scrub", "g", "--", "claude"])
+        XCTAssertTrue(run.scrub)
+        XCTAssertEqual(run.group, "g")
+        XCTAssertEqual(run.childArgv, ["claude"])
+    }
+
+    func testScrubIsOffByDefault() throws {
+        XCTAssertFalse(try parseRun(["g", "--", "claude"]).scrub)
+    }
+
+    func testKeepIsRepeatable() throws {
+        let run = try parseRun(["--scrub", "--keep", "SSH_AUTH_SOCK", "--keep", "EDITOR", "g", "--", "claude"])
+        XCTAssertEqual(run.keep, ["SSH_AUTH_SOCK", "EDITOR"])
+    }
+
+    func testKeepWithoutScrubIsRejected() {
+        XCTAssertThrowsError(try parseRun(["--keep", "EDITOR", "g", "--", "claude"]))
+    }
+
+    func testKeepRejectsInvalidName() {
+        XCTAssertThrowsError(try parseRun(["--scrub", "--keep", "A=B", "g", "--", "claude"]))
+    }
+
+    /// `mima run g --scrub -- cmd` would otherwise exec "--scrub" and the
+    /// user would believe the child was scrubbed.
+    func testScrubAfterGroupIsAnErrorNotACommand() {
+        XCTAssertThrowsError(try parseRun(["g", "--scrub", "--", "claude"]))
+        XCTAssertThrowsError(try parseRun(["g", "--", "--scrub", "claude"]))
+        XCTAssertThrowsError(try parseRun(["g", "--keep=X", "claude"]))
+    }
+
     // MARK: - mima secret rm
 
     func testSecretRmAliasResolvesToRemove() throws {

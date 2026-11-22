@@ -15,42 +15,51 @@ Alpha. What works today:
 - `mima secret` — add / list / get / remove secrets in the macOS Keychain with a `.userPresence` ACL
 - `mima group` — map environment-variable names to secret names, organised into groups (`~/.mima.yaml`)
 - `mima run <group> -- cmd` — one Touch ID unlocks the whole group; secrets are injected into the child via `execve`, never into the parent `environ`
+- `mima run --scrub <group> -- cmd` — same, but the child gets *only* the group plus a minimal safelist (`PATH`, `HOME`, `TERM`, …), not your whole environment
 - `mima env <group>` — print shell `export` lines for `eval "$(...)"` in an interactive shell
+- `mima doctor` — verify the binary is signed for Touch ID, that protected storage works, and list unprotected secrets and broken group mappings
 
 Not yet (see [Roadmap](#roadmap)):
 
 - Shell hook (`mima hook zsh|bash|fish`) with per-project `.mima.yaml` discovery — three loading modes (wrapper / public-env / compat), see [Threat model](#threat-model)
-- `mima run --scrub` for aggressively-scoped agent sandboxing
 - Session agent so Touch ID amortises across a shell session instead of firing on every prompt
 - `direnv allow`-style trust model, flake integration, `.env` loader, `PATH_add`
 
 ## Agent sandboxing
 
-This is mima's sharpest use today. Local coding agents — Claude Code, aider, codex, cursor — run under your shell and inherit your full `environ` by default. If you've ever `export`ed a prod AWS key, a personal GitHub token, or a billing-capable Stripe key, the agent can see all of it, and it can shell out. mima's per-group model is the intervention: each agent gets one group containing only what it needs.
+This is mima's sharpest use today. Local coding agents — Claude Code, aider, codex, cursor — run under your shell and inherit your full `environ` by default. If you've ever `export`ed a prod AWS key, a personal GitHub token, or a billing-capable Stripe key, the agent can see all of it, and it can shell out. mima's per-group model plus `--scrub` is the intervention: each agent gets one group containing only what it needs, and nothing else from your shell.
 
 ```bash
 mima group link agent-claude GITHUB_TOKEN      gh-agent-readonly
 mima group link agent-claude ANTHROPIC_API_KEY anthropic-key
-mima run agent-claude -- claude-code
+mima run --scrub agent-claude -- claude-code
 
 mima group link agent-aider OPENAI_API_KEY     openai-key
-mima run agent-aider -- aider
+mima run --scrub agent-aider -- aider
 ```
+
+Without `--scrub`, the agent also inherits your full shell environment — the group is added on top. Always pass `--scrub` for agents. If an agent needs one more variable from your shell, pass it explicitly with `--keep VAR`.
 
 Delete the group when you're done with a project; the underlying secret stays in the Keychain for reuse elsewhere.
 
 > **Why not `env -i`?**
-> `env -i cmd` scrubs the inherited env — correct, but it doesn't give you any way to re-inject the scoped values the agent actually needs. mima is the "where do those values come from" half: Keychain-stored, biometric-gated, declared as a group. `mima run --scrub` (see [Roadmap](#roadmap)) will combine both: strip the parent env, inject only the group, keep a minimal safelist like `PATH`, `HOME`, `TERM`.
+> `env -i cmd` scrubs the inherited env — correct, but it doesn't give you any way to re-inject the scoped values the agent actually needs. mima is the "where do those values come from" half: Keychain-stored, biometric-gated, declared as a group. `mima run --scrub` combines both: strip the parent env, inject only the group, keep a minimal safelist like `PATH`, `HOME`, `TERM`.
 
 ## Install
 
 ```bash
 git clone https://github.com/klobucar/mima.git
 cd mima
-make install SIGNING_IDENTITY="Apple Development: Name (TEAMID)"
+make install SIGNING_IDENTITY="Apple Development: Your Name (XXXXXXXXXX)"
+mima doctor        # confirms Touch ID protection is actually in effect
 ```
 
-mima needs codesigning against `entitlements.plist` to talk to the Keychain. `SIGNING_IDENTITY` must be an "Apple Development" certificate from a **paid** Apple Developer account — find it in Keychain Access. The free developer tier is not enough.
+For Touch ID protection you need two things from a **paid** Apple Developer account. The free tier is not enough.
+
+- **An "Apple Development" signing identity.** List yours with `security find-identity -v -p codesigning`. The value in parentheses is a per-person ID, not your team ID. The build reads the team ID from the certificate itself.
+- **A macOS development provisioning profile for your team.** The easiest way to get one: in Xcode, build any macOS app target once with your team selected and automatic signing on. Xcode then writes a `Mac Team Provisioning Profile: *` into `~/Library/Developer/Xcode/UserData/Provisioning Profiles/`, and `make` finds it automatically. You can also pass `PROFILE=/path/to/profile.provisionprofile` explicitly.
+
+`make install` with an identity builds `Mima.app` into `/usr/local/libexec/mima/` and symlinks `/usr/local/bin/mima` to it. The app bundle is required: only a bundle can carry the provisioning profile. `scripts/sign.sh` explains the details. Set `PREFIX=` to install elsewhere.
 
 <details>
 <summary>Why the paid account is required for Touch ID</summary>
@@ -58,7 +67,7 @@ mima needs codesigning against `entitlements.plist` to talk to the Keychain. `SI
 Apple gates the biometric / `.userPresence` Keychain ACL behind the $99/year Developer Program. Three things have to line up for a `mima secret get` to fire a Touch ID prompt:
 
 1. **A stable Team ID on the binary.** The Keychain records the calling binary's Team ID + bundle identifier as part of the ACL identity. Ad-hoc-signed binaries have no Team ID — the OS treats every rebuild as a different identity, so a `.userPresence`-gated item written by one build can't be read by the next, and biometric `LAContext` evaluation refuses to bind to ad-hoc code paths at all.
-2. **The keychain-access-groups entitlement** in `entitlements.plist`, which scopes mima to its own Keychain partition. Entitlements are only honored when they're embedded in a binary signed by a real (non-ad-hoc) identity.
+2. **The keychain-access-groups entitlement, authorized by a provisioning profile.** `.userPresence` items live in the data protection Keychain, which requires this entitlement. On macOS it is *restricted*: AMFI kills, at launch, any binary that claims it without an embedded provisioning profile authorizing it. That includes ad-hoc and Developer ID-signed binaries. A bare command-line binary can't embed a profile, so mima ships as a minimal app bundle.
 3. **A signing identity issued to a Developer Program member.** Apple issues "Apple Development" / "Apple Distribution" certificates only to enrolled members. The free tier you get from signing in with an Apple ID is a **"Personal Team"** identity — sufficient to sideload an app to a device you own, but explicitly not allowed to enable Keychain Sharing, App Groups, or anything that touches the LocalAuthentication framework. Xcode will surface a `requires a development team with the Apple Developer Program` error if you try.
 
 The reason Apple draws the line there: every binary that can pop a system biometric prompt is a phishing vector. Tying that capability to a verified, revocable developer identity means a compromised cert can be killed centrally — Apple revokes the cert, the binary stops working everywhere overnight. Personal Teams have no equivalent revocation path.
@@ -67,7 +76,9 @@ References: [Code Signing in Depth](https://developer.apple.com/library/archive/
 
 </details>
 
-> **Without a paid signing identity:** plain `make install` falls back to ad-hoc signing and a Keychain item without the `.userPresence` ACL. Values stay encrypted at rest, but **the Touch ID gate that anchors the threat model goes away** — any process running as you can read them by calling `SecItemCopyMatching` against an unlocked login Keychain. mima still beats a plaintext `.envrc` (an attacker needs to know mima's service name and call the Keychain API), but the headline biometric-gated property in the [Threat model](#threat-model) is not in effect on this install.
+> **Without a paid signing identity:** plain `make install` signs ad-hoc with no entitlements, and secrets go into the legacy login Keychain without the `.userPresence` ACL. `mima secret add` says so each time, and `mima doctor` reports it. Values stay encrypted at rest, but **the Touch ID gate that anchors the threat model goes away** — any process running as you can read them by calling `SecItemCopyMatching` against an unlocked login Keychain. mima still beats a plaintext `.envrc` (an attacker needs to know mima's service name and call the Keychain API), but the headline biometric-gated property in the [Threat model](#threat-model) is not in effect on this install.
+>
+> **Upgrading from an ad-hoc install:** a signed build won't read secrets stored without protection. It reports them as unprotected instead of silently accepting an item that any process could have planted. `mima doctor` lists them. Re-add each one with `mima secret remove <name>` and then `mima secret add <name>`.
 
 ## Quick start
 
@@ -81,10 +92,10 @@ mima group link agent OPENAI_API_KEY openai-key
 mima group link agent ANTHROPIC_API_KEY anthropic-key
 
 # Run a command with just that group's env
-mima run agent -- claude-code
+mima run --scrub agent -- claude-code
 ```
 
-One Touch ID prompt. `claude-code` starts with `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` set. Nothing else from your shell leaks in, and your parent shell's `environ` is never touched.
+One Touch ID prompt. `claude-code` starts with `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` set. With `--scrub`, nothing else from your shell leaks in beyond a minimal safelist; without it, the child inherits your full environment plus the group. Either way, your parent shell's `environ` is never touched.
 
 ## Commands
 
@@ -122,9 +133,17 @@ groups:
 
 ```bash
 mima run <group> -- <command> [args...]
+mima run --scrub <group> -- <command> [args...]
+mima run --scrub --keep SSH_AUTH_SOCK <group> -- <command> [args...]
 ```
 
-Unlocks the group's secrets behind a single `LAContext`, then `execve`s the command with an explicit envp built from your current env plus the group's values. The parent `mima` process never calls `setenv`.
+Unlocks the group's secrets behind a single `LAContext`, then `execve`s the command with an explicit envp. The parent `mima` process never calls `setenv`.
+
+- **Default:** the envp is your current env plus the group's values (a group value wins over a same-named shell variable).
+- **`--scrub`:** the envp is *only* the group's values plus `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TMPDIR`, `LANG`, `TZ`, and `LC_*`. `TMPDIR` stays because macOS points it at a per-user directory; without it, tools fall back to the shared `/tmp`. `SSH_AUTH_SOCK` is deliberately excluded — it lets the child authenticate and sign as you over SSH.
+- **`--keep VAR`** (repeatable, requires `--scrub`): pass one more variable through.
+
+Options go before the group name. Everything after the group belongs to the command, so `mima run g --scrub -- cmd` is rejected with an error rather than silently running unscrubbed.
 
 ### `mima env`
 
@@ -133,6 +152,14 @@ eval "$(mima env <group>)"
 ```
 
 Prints shell `export` lines. Less private than `mima run` because values land in your interactive shell, but useful when you need secrets for multiple ad-hoc commands. Output is POSIX-single-quote-escaped, so apostrophes and shell metacharacters cannot break the quoting.
+
+### `mima doctor`
+
+```bash
+mima doctor
+```
+
+Checks the binary's team signature and `keychain-access-groups` entitlement. It then stores and deletes a throwaway Touch ID-protected item, with no read and so no prompt. It lists any secrets stored without protection and any group mappings that point at missing secrets. It exits non-zero if anything is wrong.
 
 ## Other use cases
 
@@ -193,7 +220,7 @@ mima's design is shaped by the class of attacks that dominates 2023–present: *
 - **Plaintext credential files.** `.env` / `.envrc` / `~/.aws/credentials` / `~/.npmrc` are readable by any process running as you, and the common scraper pattern is to read them directly. mima stores values in the Keychain — encrypted at rest, opaque to a quick `cat`. With a paid Apple Developer signing identity ([see Install](#install)), retrieval is also gated by `.userPresence`: an attacker reading values triggers a Touch ID prompt out of nowhere, which is extremely conspicuous.
 - **Globally-exported shell env.** If `.zshenv` runs `export STRIPE_KEY=…`, every process you launch — including every transitive postinstall script — inherits it forever. `mima run` scopes values to the specific child process you named; they never enter the parent shell's `environ`.
 - **Secrets in shell history.** `mima secret add` uses `getpass`, never command-line arguments. Values never land in `.zsh_history`.
-- **Over-broad agent access.** Coding agents inherit your full shell env by default. `mima run agent-claude -- claude-code` hands the agent only the variables you explicitly grouped for it.
+- **Over-broad agent access.** Coding agents inherit your full shell env by default. `mima run --scrub agent-claude -- claude-code` hands the agent only the variables you explicitly grouped for it, plus a minimal safelist (`PATH`, `HOME`, `TERM`, …). Without `--scrub` the agent inherits your full shell environment, so `--scrub` is the agent-sandboxing mode.
 
 ### What mima does not defend against
 
@@ -225,11 +252,10 @@ Short version below; [`ROADMAP.md`](ROADMAP.md) has rationale, open questions, a
    - **Compat mode** — auto-export groups on `cd` / unset on leave, direnv-classic. Opt-in via `auto_export: true` in `.mima.yaml`.
 
    See [Threat model](#threat-model) for why wrapper mode is the default.
-2. **Agent sandbox flag.** `mima run --scrub <group> -- cmd` runs the child with *only* the group's env plus a minimal safelist (`PATH`, `HOME`, `TERM`, `USER`, `SHELL`) — the companion to [Agent sandboxing](#agent-sandboxing) above.
-3. **Trust model.** `mima allow` / `mima deny` stores a content hash per config file, refusing to auto-load untrusted ones — same idea as `direnv allow`.
-4. **Session agent.** A small launchd daemon holds unlocked values in memory keyed to a shell session so Touch ID amortises across a work session rather than firing on every `cd`.
-5. **Nix / flake integration.** `use flake` shells out to `nix print-dev-env --json`, caches by flake-lock hash, merges into the exported env.
-6. **Dotenv + `PATH_add`.** Cover the direnv use cases that don't need Keychain.
+2. **Trust model.** `mima allow` / `mima deny` stores a content hash per config file, refusing to auto-load untrusted ones — same idea as `direnv allow`.
+3. **Session agent.** A small launchd daemon holds unlocked values in memory keyed to a shell session so Touch ID amortises across a work session rather than firing on every `cd`.
+4. **Nix / flake integration.** `use flake` shells out to `nix print-dev-env --json`, caches by flake-lock hash, merges into the exported env.
+5. **Dotenv + `PATH_add`.** Cover the direnv use cases that don't need Keychain.
 
 ## Related
 
