@@ -18,7 +18,13 @@ struct Group: ParsableCommand {
         
         @Argument(help: "The name of the secret in Keychain")
         var secretName: String
-        
+
+        func validate() throws {
+            guard isValidEnvVarName(envVar) else {
+                throw ValidationError(InvalidEnvVarName(name: envVar).description)
+            }
+        }
+
         func run() throws {
             // Validation: Check if secret exists
             do {

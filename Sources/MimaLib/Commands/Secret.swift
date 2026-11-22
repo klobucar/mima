@@ -45,7 +45,7 @@ struct Secret: ParsableCommand {
     }
     
     struct Remove: ParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Remove a secret")
+        static let configuration = CommandConfiguration(abstract: "Remove a secret", aliases: ["rm"])
         
         @Argument(help: "The name of the secret to remove")
         var name: String
@@ -68,7 +68,22 @@ struct Secret: ParsableCommand {
         
         @Flag(help: "Format as 'export NAME=VALUE' for eval")
         var export: Bool = false
-        
+
+        /// Infer the env var from the secret name: test-key -> TEST_KEY.
+        static func exportName(for name: String) -> String {
+            name.uppercased().replacingOccurrences(of: "-", with: "_")
+        }
+
+        // Runs before any Keychain access, so a name that can't be
+        // exported never triggers a Touch ID prompt.
+        func validate() throws {
+            if export && !isValidEnvVarName(Self.exportName(for: name)) {
+                throw ValidationError(
+                    "--export: \(InvalidEnvVarName(name: Self.exportName(for: name))). Link the secret into a group and use 'mima env' to pick a name."
+                )
+            }
+        }
+
         func run() throws {
             // Warning to stderr
             fputs("⚠️  Warning: Secret loaded into shell history/logs.\n", stderr)
@@ -81,9 +96,7 @@ struct Secret: ParsableCommand {
                 }
                 
                 if export {
-                    // Infer Env Var: test-key -> TEST_KEY
-                    let envVar = name.uppercased().replacingOccurrences(of: "-", with: "_")
-                    print("export \(envVar)=\(shellSingleQuote(value))")
+                    print(try exportLine(name: Self.exportName(for: name), value: value))
                 } else {
                     print(value)
                 }

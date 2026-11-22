@@ -20,7 +20,17 @@ struct Env: ParsableCommand {
             fputs("No secrets found for group '\(group)'.\n", stderr)
             return
         }
-        
+
+        // This output gets eval'd, and names are emitted unquoted. Refuse
+        // the whole group before unlocking anything if any name is unsafe.
+        let invalid = invalidEnvVarNames(in: mappings)
+        guard invalid.isEmpty else {
+            for name in invalid {
+                fputs("Error: group '\(group)': \(InvalidEnvVarName(name: name))\n", stderr)
+            }
+            throw ExitCode.failure
+        }
+
         // Context for batch unlock
         let context = LAContext()
         context.localizedReason = "Access secrets for '\(group)'"
@@ -29,7 +39,7 @@ struct Env: ParsableCommand {
             do {
                 let secretData = try KeychainManager.shared.get(key: secretName, context: context)
                 if let secretValue = String(data: secretData, encoding: .utf8) {
-                    print("export \(envVar)=\(shellSingleQuote(secretValue))")
+                    print(try exportLine(name: envVar, value: secretValue))
                 }
             } catch {
                 fputs("Failed to retrieve '\(secretName)': \(error)\n", stderr)
