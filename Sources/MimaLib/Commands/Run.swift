@@ -15,7 +15,17 @@ struct Run: ParsableCommand {
     @Argument(parsing: .captureForPassthrough, help: "The command to run (use -- to separate)")
     var command: [String]
 
+    /// The child's argv. `.captureForPassthrough` keeps the `--`
+    /// terminator as the first captured element, so the documented
+    /// `mima run <group> -- cmd` form would otherwise try to exec `--`.
+    /// Only a leading `--` is stripped, so `mima run g cmd -- x` still
+    /// passes `--` through to `cmd`.
+    var childArgv: [String] {
+        command.first == "--" ? Array(command.dropFirst()) : command
+    }
+
     func run() throws {
+        let command = childArgv
         guard !command.isEmpty else {
             fputs("Error: No command provided.\n", stderr)
             throw ExitCode.validationFailure
@@ -25,6 +35,17 @@ struct Run: ParsableCommand {
         let mappings = try ConfigManager.shared.getSecrets(for: group)
         if mappings.isEmpty {
             print("⚠️ No secrets found for group '\(group)'. Running command explicitly without added secrets.")
+        }
+
+        // Each name becomes the part of a `NAME=value` envp entry before
+        // the first `=`. A name containing `=`, or an empty name, would
+        // shadow or corrupt other variables. Refuse before unlocking.
+        let invalid = invalidEnvVarNames(in: mappings)
+        guard invalid.isEmpty else {
+            for name in invalid {
+                fputs("⛔️ Error: group '\(group)': \(InvalidEnvVarName(name: name))\n", stderr)
+            }
+            throw ExitCode.failure
         }
 
         // 2. Batch Unlock — one LAContext, one Touch ID prompt for N secrets.
