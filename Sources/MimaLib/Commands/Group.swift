@@ -19,9 +19,18 @@ struct Group: ParsableCommand {
         @Argument(help: "The name of the secret in Keychain")
         var secretName: String
 
+        @Option(
+            name: .customLong("host"),
+            help: ArgumentHelp("With 'mima run --claude', the host Claude Code's sandbox may send the real value to (others see a placeholder). Repeatable.", valueName: "host")
+        )
+        var hosts: [String] = []
+
         func validate() throws {
             guard isValidEnvVarName(envVar) else {
                 throw ValidationError(InvalidEnvVarName(name: envVar).description)
+            }
+            for host in hosts where !isValidInjectHost(host) {
+                throw ValidationError("--host: \(host.debugDescription) is not a hostname (e.g. api.github.com or *.example.com)")
             }
         }
 
@@ -36,7 +45,7 @@ struct Group: ParsableCommand {
                 print("⚠️ Warning: Could not verify secret existence: \(error)")
             }
             
-            try ConfigManager.shared.link(group: group, envVar: envVar, secretName: secretName)
+            try ConfigManager.shared.link(group: group, envVar: envVar, secretName: secretName, hosts: hosts.map { $0.lowercased() })
             print("🔗 Linked '\(envVar)' -> '\(secretName)' in group '\(group)'.")
         }
     }
@@ -93,8 +102,9 @@ struct Group: ParsableCommand {
             
             for (group, vars) in config.groups {
                 print("📦 \(group)")
-                for (env, secret) in vars {
-                    print("  ├─ \(env) -> \(secret)")
+                for (env, mapping) in vars.sorted(by: { $0.key < $1.key }) {
+                    let hosts = mapping.hosts.isEmpty ? "" : "  (--claude injects into: \(mapping.hosts.joined(separator: ", ")))"
+                    print("  ├─ \(env) -> \(mapping.secret)\(hosts)")
                 }
             }
         }

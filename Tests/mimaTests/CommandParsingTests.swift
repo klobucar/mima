@@ -66,6 +66,17 @@ final class CommandParsingTests: XCTestCase {
         XCTAssertThrowsError(try parseRun(["g", "--keep=X", "claude"]))
     }
 
+    func testClaudeFlagParsesAndRejectsMask() throws {
+        XCTAssertTrue(try parseRun(["--claude", "--scrub", "g", "--", "claude"]).claude)
+        XCTAssertThrowsError(try parseRun(["--claude", "--mask", "g", "--", "claude"]))
+        XCTAssertThrowsError(try parseRun(["g", "--claude", "claude"]), "flag after the group is an error")
+    }
+
+    func testGroupLinkHostValidation() {
+        XCTAssertNoThrow(try MimaApp.parseAsRoot(["group", "link", "g", "GH_TOKEN", "gh", "--host", "api.github.com"]))
+        XCTAssertThrowsError(try MimaApp.parseAsRoot(["group", "link", "g", "GH_TOKEN", "gh", "--host", "https://api.github.com"]))
+    }
+
     // MARK: - mima secret rm
 
     func testSecretRmAliasResolvesToRemove() throws {

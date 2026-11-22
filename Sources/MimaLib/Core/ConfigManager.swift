@@ -1,8 +1,51 @@
 import Foundation
 import Yams
 
+/// One environment variable's source.
+///
+/// In YAML, the short form `ENV: secret-name` is the common case. The long
+/// form adds hosts for `mima run --claude` credential masking:
+///
+///     ENV: {secret: secret-name, hosts: [api.github.com]}
+///
+/// A mapping without hosts is always written back in the short form, so
+/// existing configs round-trip unchanged.
+public struct SecretMapping: Codable, Equatable, ExpressibleByStringLiteral {
+    public var secret: String
+    public var hosts: [String]
+
+    public init(secret: String, hosts: [String] = []) {
+        self.secret = secret
+        self.hosts = hosts
+    }
+
+    public init(stringLiteral value: String) { self.init(secret: value) }
+
+    private enum CodingKeys: String, CodingKey { case secret, hosts }
+
+    public init(from decoder: Decoder) throws {
+        if let short = try? decoder.singleValueContainer().decode(String.self) {
+            self.init(secret: short)
+            return
+        }
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(secret: try c.decode(String.self, forKey: .secret), hosts: try c.decodeIfPresent([String].self, forKey: .hosts) ?? [])
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        if hosts.isEmpty {
+            var c = encoder.singleValueContainer()
+            try c.encode(secret)
+        } else {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(secret, forKey: .secret)
+            try c.encode(hosts, forKey: .hosts)
+        }
+    }
+}
+
 public struct MimaConfig: Codable {
-    public var groups: [String: [String: String]] = [:]
+    public var groups: [String: [String: SecretMapping]] = [:]
     public init() {}
 }
 
@@ -61,14 +104,9 @@ public class ConfigManager {
         _ = try fileManager.replaceItemAt(configPath, withItemAt: tempURL, backupItemName: nil, options: .usingNewMetadataOnly)
     }
     
-    public func link(group: String, envVar: String, secretName: String) throws {
+    public func link(group: String, envVar: String, secretName: String, hosts: [String] = []) throws {
         var config = try load()
-        
-        if config.groups[group] == nil {
-            config.groups[group] = [:]
-        }
-        
-        config.groups[group]?[envVar] = secretName
+        config.groups[group, default: [:]][envVar] = SecretMapping(secret: secretName, hosts: hosts)
         try save(config)
     }
     
@@ -96,8 +134,13 @@ public class ConfigManager {
         return try encoder.encode(config)
     }
     
+    /// Env var → secret name for a group.
     public func getSecrets(for group: String) throws -> [String: String] {
-        let config = try load()
-        return config.groups[group] ?? [:]
+        try getMappings(for: group).mapValues(\.secret)
+    }
+
+    /// Env var → full mapping (secret name and hosts) for a group.
+    public func getMappings(for group: String) throws -> [String: SecretMapping] {
+        try load().groups[group] ?? [:]
     }
 }

@@ -42,6 +42,27 @@ Without `--scrub`, the agent also inherits your full shell environment — the g
 
 Delete the group when you're done with a project; the underlying secret stays in the Keychain for reuse elsewhere.
 
+### Claude Code: hide values from sandboxed commands
+
+`--scrub` limits what the agent *process* gets. With Claude Code you can go further: its sandbox can keep a variable's real value away from the shell commands the agent runs.
+
+```bash
+mima group link agent-claude GH_TOKEN gh-agent-readonly --host api.github.com
+mima group link agent-claude DATABASE_URL dev-db
+mima run --claude --scrub agent-claude -- claude
+```
+
+`--claude` inserts `--settings` into the `claude` command line, enabling Claude Code's sandbox credential controls for the group:
+
+- **Variables linked with `--host` are masked.** Sandboxed Bash sees a per-session placeholder. Claude Code's proxy substitutes the real value only on requests to those hosts, so `curl https://api.github.com` works but `echo $GH_TOKEN` or a post to an attacker's server gets the placeholder. This uses Claude Code's experimental `sandbox.network.tlsTerminate`.
+- **Variables without hosts are denied:** sandboxed commands don't get them at all.
+
+Limits:
+- This covers sandboxed Bash only. The Claude Code process itself has the real values, and per Claude Code's docs, hooks and local MCP servers run with your full access.
+- It requires a Claude Code version with sandbox credential settings.
+- Claude Code honors these only from user settings, managed settings, or `--settings`, never from a repo's `.claude/settings.json`. That's why mima passes them on the command line.
+- mima checks that the command is `claude`, and refuses if you already pass `--settings`.
+
 ### What happens when the agent asks mima for more
 
 An agent can run `mima` itself. mima watches for this:
@@ -126,6 +147,7 @@ mima secret get <name> --export     # print `export NAME=VALUE`
 
 ```bash
 mima group link <group> <ENV_VAR> <secret-name>
+mima group link <group> <ENV_VAR> <secret-name> --host api.github.com   # for run --claude masking
 mima group unlink <group> <ENV_VAR>    # drop one variable; the secret stays in the Keychain
 mima group rm <group>                  # drop the whole group; secrets stay in the Keychain
 mima group list
@@ -141,6 +163,10 @@ groups:
   dev:
     DATABASE_URL: dev-db
     STRIPE_KEY: stripe-test
+  agent-claude:
+    GH_TOKEN:                       # long form, written by --host
+      secret: gh-agent-readonly
+      hosts: [api.github.com]
 ```
 
 ### `mima import`

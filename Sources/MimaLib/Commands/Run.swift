@@ -29,6 +29,9 @@ struct Run: ParsableCommand {
     @Flag(help: "Replace secret values in the command's output with <mima:NAME>. The command's stdout and stderr become pipes, not a terminal, and mima stays running alongside it.")
     var mask = false
 
+    @Flag(help: "For `mima run --claude <group> -- claude`: also tell Claude Code's sandbox to hide the group's values from sandboxed Bash. Variables linked with --host are masked and sent only to those hosts; the rest are denied.")
+    var claude = false
+
     @Argument(help: "The group to load secrets for")
     var group: String
 
@@ -45,6 +48,9 @@ struct Run: ParsableCommand {
     }
 
     func validate() throws {
+        if claude && mask {
+            throw ValidationError("--mask turns claude's terminal into a pipe; use --claude without --mask.")
+        }
         if !keep.isEmpty && !scrub {
             throw ValidationError("--keep only applies with --scrub (without it the command already inherits everything).")
         }
@@ -54,20 +60,29 @@ struct Run: ParsableCommand {
         // Everything after the group is captured for the child, so
         // `mima run g --scrub -- cmd` would try to exec "--scrub" and
         // silently skip the scrub. Catch that with a clear message.
-        if let first = childArgv.first, ["--scrub", "--mask"].contains(first) || first == "--keep" || first.hasPrefix("--keep=") {
+        if let first = childArgv.first, ["--scrub", "--mask", "--claude"].contains(first) || first == "--keep" || first.hasPrefix("--keep=") {
             throw ValidationError("Put \(first) before the group name: mima run \(first) <group> -- <command>")
         }
     }
 
     func run() throws {
-        let command = childArgv
+        var command = childArgv
         guard !command.isEmpty else {
             fputs("Error: No command provided.\n", stderr)
             throw ExitCode.validationFailure
         }
 
         // 1. Load Config
-        let mappings = try ConfigManager.shared.getSecrets(for: group)
+        let fullMappings = try ConfigManager.shared.getMappings(for: group)
+        let mappings = fullMappings.mapValues(\.secret)
+        if claude {
+            do {
+                command = try claudeArgv(command, mappings: fullMappings)
+            } catch {
+                fputs("Error: \(error)\n", stderr)
+                throw ExitCode.validationFailure
+            }
+        }
         if mappings.isEmpty {
             fputs("⚠️ No secrets found for group '\(group)'. Running the command without added secrets.\n", stderr)
         }
