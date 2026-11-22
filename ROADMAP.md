@@ -9,6 +9,7 @@ What works today (alpha):
 - **`mima secret`** — add / list / get / remove secrets in the macOS Keychain. With a paid Apple Developer identity, items carry a `.userPresence` ACL so retrieval requires Touch ID; without one, ad-hoc signing falls back to encryption-at-rest only (see [Install](README.md#install)).
 - **`mima group`** — declare per-project groups in `~/.mima.yaml` mapping environment-variable names to Keychain secret names. Atomic writes.
 - **`mima run <group> -- cmd`** — single `LAContext` unlocks the whole group; child is launched via `execve` with an explicit envp, so the parent never calls `setenv` and values never enter its `environ`.
+- **`mima run --scrub <group> -- cmd`** — agent sandbox flag: the child gets *only* the group plus a minimal safelist (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TMPDIR`, `LANG`, `TZ`, `LC_*`). `SSH_AUTH_SOCK` is excluded by default; `--keep VAR` passes extras. `TMPDIR` is kept so tools don't fall back to the shared `/tmp`.
 - **`mima env <group>`** — emit POSIX-quoted `export` lines for `eval "$(mima env …)"`. Documented as deliberately less private than `mima run`.
 - **CI** — Swift tests, CodeQL, and zizmor run on every push and PR.
 
@@ -28,14 +29,7 @@ Open questions:
 - Parent/child `.mima.yaml` inheritance — extend or replace?
 - Whether to surface an env-delta on `cd`, like direnv does.
 
-### 2. Agent sandbox flag
-
-`mima run --scrub <group> -- cmd` runs the child with **only** the group's env plus a minimal safelist (`PATH`, `HOME`, `TERM`, `USER`, `SHELL`). Companion to [Agent sandboxing](README.md#agent-sandboxing) — strips the parent env in addition to refusing to leak it.
-
-Open questions:
-- Default safelist contents (TZ? LANG? LC_*?).
-
-### 3. Trust model
+### 2. Trust model
 
 `mima allow` / `mima deny` records a content hash per `.mima.yaml`. Auto-loading refuses any file whose hash isn't in the trust store. Same idea as `direnv allow`. **Required before the shell hook can ship** — without it, `git clone` of a hostile repo turns into code execution on your next `cd`.
 
@@ -43,7 +37,7 @@ Open questions:
 - Behaviour on hash mismatch — silent block, or warning that requires `mima allow` to re-bless.
 - Where to store the trust file (`~/.mima/trust.yaml` vs. content-hashed dir).
 
-### 4. Session agent
+### 3. Session agent
 
 Small launchd daemon holds unlocked group values in memory keyed to a shell session, so one Touch ID covers many `mima run` invocations across that session. Same shape as `ssh-agent` / `op` daemon, with a configurable TTL.
 
@@ -52,11 +46,11 @@ Open questions:
 - Session identity: TTY group, PID tree, or explicit unlock token?
 - Memory hygiene: zero on TTL expiry; refuse to swap.
 
-### 5. Nix / flake integration
+### 4. Nix / flake integration
 
 `use flake` shells out to `nix print-dev-env --json`, caches by `flake.lock` hash, merges into the exported env. Mirrors nix-direnv.
 
-### 6. Dotenv + `PATH_add`
+### 5. Dotenv + `PATH_add`
 
 The remaining direnv-shaped niceties: a `.env` loader for non-secret per-project values, `PATH_add` for `<project>/bin`-style PATH munging. Lowest priority — easy to replicate with shell snippets in the meantime.
 
