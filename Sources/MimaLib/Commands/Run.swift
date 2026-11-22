@@ -26,6 +26,9 @@ struct Run: ParsableCommand {
     )
     var keep: [String] = []
 
+    @Flag(help: "Replace secret values in the command's output with <mima:NAME>. The command's stdout and stderr become pipes, not a terminal, and mima stays running alongside it.")
+    var mask = false
+
     @Argument(help: "The group to load secrets for")
     var group: String
 
@@ -51,7 +54,7 @@ struct Run: ParsableCommand {
         // Everything after the group is captured for the child, so
         // `mima run g --scrub -- cmd` would try to exec "--scrub" and
         // silently skip the scrub. Catch that with a clear message.
-        if let first = childArgv.first, first == "--scrub" || first == "--keep" || first.hasPrefix("--keep=") {
+        if let first = childArgv.first, ["--scrub", "--mask"].contains(first) || first == "--keep" || first.hasPrefix("--keep=") {
             throw ValidationError("Put \(first) before the group name: mima run \(first) <group> -- <command>")
         }
     }
@@ -143,6 +146,22 @@ struct Run: ParsableCommand {
                 throw ExitCode.failure
             }
             resolvedPath = found
+        }
+
+        // 5a. --mask: stay alive and filter the child's output.
+        if mask {
+            let unmasked = OutputMasker.unmaskedNames(secretsEnv)
+            if !unmasked.isEmpty {
+                fputs("⚠️  Not masking \(unmasked.joined(separator: ", ")): shorter than \(OutputMasker.minimumLength) bytes.\n", stderr)
+            }
+            let code: Int32
+            do {
+                code = try runMasked(path: resolvedPath, argv: command, env: childEnv, secrets: secretsEnv)
+            } catch {
+                fputs("Error executing '\(resolvedPath)': \(error.localizedDescription)\n", stderr)
+                throw ExitCode.failure
+            }
+            throw ExitCode(code)
         }
 
         // 5. Hand off to execve. On success this call replaces the

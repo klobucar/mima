@@ -164,6 +164,12 @@ Unlocks the group's secrets behind a single `LAContext`, then `execve`s the comm
 - **Default:** the envp is your current env plus the group's values (a group value wins over a same-named shell variable).
 - **`--scrub`:** the envp is *only* the group's values plus `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TMPDIR`, `LANG`, `TZ`, and `LC_*`. `TMPDIR` stays because macOS points it at a per-user directory; without it, tools fall back to the shared `/tmp`. `SSH_AUTH_SOCK` is deliberately excluded — it lets the child authenticate and sign as you over SSH.
 - **`--keep VAR`** (repeatable, requires `--scrub`): pass one more variable through.
+- **`--mask`:** replaces every secret value in the command's stdout and stderr with `<mima:NAME>`. That covers raw and JSON-escaped forms, and values split across reads. Use it when output lands somewhere persistent, like an agent transcript or CI log: `curl -v` and debug prints are the usual leaks. Costs:
+  - mima stays running for the command's lifetime, holding the values in memory to match against, instead of handing off with `execve`;
+  - the command's stdout and stderr become pipes rather than a terminal, so colors and full-screen TUIs may degrade;
+  - values shorter than 4 bytes aren't masked, and mima says which.
+
+  Exit codes and signals pass through.
 
 Options go before the group name. Everything after the group belongs to the command, so `mima run g --scrub -- cmd` is rejected with an error rather than silently running unscrubbed.
 
