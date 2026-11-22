@@ -42,6 +42,16 @@ Without `--scrub`, the agent also inherits your full shell environment — the g
 
 Delete the group when you're done with a project; the underlying secret stays in the Keychain for reuse elsewhere.
 
+### What happens when the agent asks mima for more
+
+An agent can run `mima` itself. mima watches for this:
+
+- **The Touch ID prompt says exactly what's being released and who asked.** For example: *"mima is trying to give 2 secrets from group 'prod' to curl (aws-prod, stripe-live). ⚠️ Requested by an AI agent (Claude Code) via zsh → claude → zsh → mima"*. Because it lists the actual secret names, a group quietly remapped in `~/.mima.yaml` shows up at approval time.
+- **`mima env` and `mima secret get` refuse to print values when started by an agent.** Anything they print would land in the agent's transcript. They also refuse when there's no terminal at all. `eval "$(mima env g)"` in your own shell still works, and scripts you trust can pass `--force`.
+- **How agents are recognized:** `CLAUDE_CODE_CHILD_SESSION=1`, or an agent anywhere in the parent-process chain (`claude`, `codex`, `aider`, `cursor-agent`, `gemini`, `opencode`, `goose`, including npm-installed and versioned binaries). `CLAUDECODE=1` alone doesn't count, because Claude Code's IDE extensions set it in terminals you type into.
+
+This is a speed bump, not a boundary. The agent runs as you: it can unset variables, double-fork out of the process tree, or pass `--force` itself. The control that holds is the Touch ID prompt, which now tells you when an agent is asking. `mima run` isn't refused under an agent, since running tests with a group's secrets is a legitimate request. It just gets the labeled prompt.
+
 > **Why not `env -i`?**
 > `env -i cmd` scrubs the inherited env — correct, but it doesn't give you any way to re-inject the scoped values the agent actually needs. mima is the "where do those values come from" half: Keychain-stored, biometric-gated, declared as a group. `mima run --scrub` combines both: strip the parent env, inject only the group, keep a minimal safelist like `PATH`, `HOME`, `TERM`.
 
@@ -237,7 +247,12 @@ mima's design is shaped by the class of attacks that dominates 2023–present: *
 ### What mima does not defend against
 
 - **Malicious children leaking the env they received.** Once the child has the variable, it can send it anywhere. Defense is narrow groups + sandboxing (devcontainer, firejail, macOS app sandbox).
-- **Deceptive Touch ID prompts.** An attacker who can invoke the mima binary can trigger a legitimate biometric prompt. User vigilance is the only thing stopping a reflexive approval.
+- **Deceptive Touch ID prompts.** An attacker who can invoke the mima binary can trigger a legitimate biometric prompt. mima narrows this:
+  - the prompt names the exact secrets, the command, and the parent-process chain;
+  - it flags requests from AI agents;
+  - names are stripped of control and bidi characters so they can't fake text in the dialog.
+
+  But a determined same-user attacker can still spoof its process tree, so your attention at the prompt is the last line of defense.
 - **Shell-level compromise.** If your `.zshrc`, a shell plugin, or a supply-chain-compromised tool has injected code into your shell, mima runs inside that trust boundary and can't help.
 - **Session agent TTL window.** When the session agent ships, unlocked values will sit in memory for a configurable interval. During that window, a supply-chain attacker running as you can read them without triggering a biometric prompt — the same class of risk `ssh-agent` and `op` accept. Short TTLs mitigate; they do not eliminate.
 - **`mima env` + `eval`.** After you eval the output, values are in the shell `environ` for the rest of the session. Same threat surface as plain `export`. Use deliberately.

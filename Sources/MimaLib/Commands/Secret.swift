@@ -1,6 +1,7 @@
 import ArgumentParser
 import Foundation
 import Darwin
+import LocalAuthentication
 
 struct Secret: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -114,6 +115,9 @@ struct Secret: ParsableCommand {
         @Flag(help: "Format as 'export NAME=VALUE' for eval")
         var export: Bool = false
 
+        @Flag(help: "Print even when started by an AI agent or without a terminal. The Touch ID prompt still names the caller.")
+        var force = false
+
         /// Infer the env var from the secret name: test-key -> TEST_KEY.
         static func exportName(for name: String) -> String {
             name.uppercased().replacingOccurrences(of: "-", with: "_")
@@ -132,9 +136,20 @@ struct Secret: ParsableCommand {
         func run() throws {
             // Warning to stderr
             fputs("⚠️  Warning: Secret loaded into shell history/logs.\n", stderr)
-            
+
+            let chain = currentCallerChain()
+            let agent = detectAgent(environment: ProcessInfo.processInfo.environment, chain: chain)
+            if let refusal = secretOutputRefusal(
+                force: force, agent: agent, chain: chain, stdinIsTTY: isTTY(STDIN_FILENO), stderrIsTTY: isTTY(STDERR_FILENO)
+            ) {
+                fputs(refusal + "\n", stderr)
+                throw ExitCode.failure
+            }
+            let context = LAContext()
+            context.localizedReason = unlockReason(action: "print a secret", secrets: [name], chain: chain, agent: agent)
+
             do {
-                let data = try KeychainManager.shared.get(key: name, context: nil)
+                let data = try KeychainManager.shared.get(key: name, context: context)
                 guard let value = String(data: data, encoding: .utf8) else {
                     print("Error: Invalid UTF-8 data")
                     return

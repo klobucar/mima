@@ -84,8 +84,15 @@ struct Run: ParsableCommand {
         var secretsEnv: [String: String] = [:]
 
         if !mappings.isEmpty {
+            // Name the exact secrets, the command, and who asked, so a
+            // remapped group or an agent's request is visible in the prompt.
+            let chain = currentCallerChain()
             let context = LAContext()
-            context.localizedReason = "Access secrets for '\(group)'"
+            context.localizedReason = unlockReason(
+                action: "give \(mappings.count) secret\(mappings.count == 1 ? "" : "s") from group '\(sanitizeForPrompt(group, limit: 32))' to \(sanitizeForPrompt((command[0] as NSString).lastPathComponent, limit: 32))",
+                secrets: Array(mappings.values), chain: chain,
+                agent: detectAgent(environment: ProcessInfo.processInfo.environment, chain: chain)
+            )
 
             // Match the items' `.userPresence` ACL, which accepts Touch ID
             // or the login password. A biometrics-only check refused to run

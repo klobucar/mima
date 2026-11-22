@@ -12,6 +12,7 @@ What works today (alpha):
 - **`mima run --scrub <group> -- cmd`** — agent sandbox flag: the child gets *only* the group plus a minimal safelist (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `TMPDIR`, `LANG`, `TZ`, `LC_*`). `SSH_AUTH_SOCK` is excluded by default; `--keep VAR` passes extras. `TMPDIR` is kept so tools don't fall back to the shared `/tmp`.
 - **`mima env <group>`** — emit POSIX-quoted `export` lines for `eval "$(mima env …)"`. Documented as deliberately less private than `mima run`.
 - **Lifecycle commands** — `secret add --stdin`, `secret update`, `group unlink` / `group rm`, and `mima import .env --group g`. The interactive prompt takes values up to 8 KB; `getpass` used to cut them silently at 128 bytes.
+- **Caller-aware unlock** — the Touch ID prompt names the secrets, the command, and the parent-process chain, and flags AI agents (`CLAUDE_CODE_CHILD_SESSION=1` or a known agent in the process tree). `env` / `secret get` refuse to print values under an agent or without a terminal unless `--force` is passed.
 - **Touch ID signing** — `make install SIGNING_IDENTITY=…` builds a minimal `Mima.app` with an embedded provisioning profile, `keychain-access-groups`, and hardened runtime, then symlinks it into `PATH`. `mima doctor` verifies protection end to end and lists unprotected secrets.
 - **CI** — Swift tests, CodeQL, and zizmor run on every push and PR.
 

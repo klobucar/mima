@@ -10,7 +10,10 @@ struct Env: ParsableCommand {
     
     @Argument(help: "The group to load secrets for")
     var group: String
-    
+
+    @Flag(help: "Print even when started by an AI agent or without a terminal. The Touch ID prompt still names the caller.")
+    var force = false
+
     func run() throws {
         // Warning to stderr
         fputs("⚠️  Warning: Secrets loaded into shell history/logs.\n", stderr)
@@ -31,10 +34,22 @@ struct Env: ParsableCommand {
             throw ExitCode.failure
         }
 
+        let chain = currentCallerChain()
+        let agent = detectAgent(environment: ProcessInfo.processInfo.environment, chain: chain)
+        if let refusal = secretOutputRefusal(
+            force: force, agent: agent, chain: chain, stdinIsTTY: isTTY(STDIN_FILENO), stderrIsTTY: isTTY(STDERR_FILENO)
+        ) {
+            fputs(refusal + "\n", stderr)
+            throw ExitCode.failure
+        }
+
         // Context for batch unlock
         let context = LAContext()
-        context.localizedReason = "Access secrets for '\(group)'"
-        
+        context.localizedReason = unlockReason(
+            action: "print \(mappings.count) secret\(mappings.count == 1 ? "" : "s") from group '\(sanitizeForPrompt(group, limit: 32))' as shell exports",
+            secrets: Array(mappings.values), chain: chain, agent: agent
+        )
+
         for (envVar, secretName) in mappings {
             do {
                 let secretData = try KeychainManager.shared.get(key: secretName, context: context)
