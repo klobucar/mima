@@ -4,6 +4,13 @@
   <img src="assets/mima-banner.png" alt="MIMA. Split Identity. Keep it real." width="780" />
 </p>
 
+<p align="center">
+  <a href="https://github.com/klobucar/mima/actions/workflows/swift.yml"><img src="https://github.com/klobucar/mima/actions/workflows/swift.yml/badge.svg" alt="CI status"></a>
+  <img src="https://img.shields.io/badge/swift-5.10%2B-orange.svg" alt="Swift 5.10+">
+  <img src="https://img.shields.io/badge/macOS-12%2B-blue.svg" alt="macOS 12+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+</p>
+
 **A Keychain-backed environment manager for macOS.** Store API keys, database URLs, and other secrets in the macOS Keychain. Give a command the variables it needs without exporting them into your shell. A properly signed build can unlock a group with one Touch ID or login password prompt.
 
 [Install](#install) · [Quick start](#quick-start) · [Use with coding agents](#use-with-coding-agents) · [Import existing secrets](#import-existing-secrets) · [Commands](#commands)
